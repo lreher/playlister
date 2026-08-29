@@ -1,0 +1,17 @@
+{
+  "name": "playlister",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "sync": "node scripts/sync.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "find-my-way": "^9.9.0"
+  }
+}
