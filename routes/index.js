@@ -1,20 +1,13 @@
 const FindMyWay = require('find-my-way');
 const spotify = require('../sources/spotify');
 const songsController = require('../controllers/songs');
-const { getQueryParams, sendJson, serveStatic } = require('./utils');
+const { getQueryParams, sendJson } = require('./utils');
+const { registerStaticRoutes } = require('./static');
 
 const router = FindMyWay();
 
-router.on('GET', '/', serveStatic('index.html', 'text/html'));
-router.on('GET', '/app.js', serveStatic('app.js', 'application/javascript'));
-router.on('GET', '/rangeSlider.js', serveStatic('rangeSlider.js', 'application/javascript'));
-router.on('GET', '/filters.js', serveStatic('filters.js', 'application/javascript'));
-router.on('GET', '/songTable.js', serveStatic('songTable.js', 'application/javascript'));
-router.on('GET', '/tabs.js', serveStatic('tabs.js', 'application/javascript'));
-router.on('GET', '/dashboards.js', serveStatic('dashboards.js', 'application/javascript'));
-router.on('GET', '/countryCoords.js', serveStatic('countryCoords.js', 'application/javascript'));
-router.on('GET', '/style.css', serveStatic('style.css', 'text/css'));
-router.on('GET', '/world.geo.json', serveStatic('world.geo.json', 'application/json'));
+// Register static routes
+registerStaticRoutes(router);
 
 router.on('GET', '/login', (req, res) => {
   res.writeHead(302, { Location: spotify.getAuthorizeUrl() });
