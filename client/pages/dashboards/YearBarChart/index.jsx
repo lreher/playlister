@@ -1,10 +1,8 @@
 import { BarChart } from '../../../components/charts/BarChart';
-import { chartTheme } from '../../../themes/chartTheme';
-import { heatColor } from './style';
+import { cssVar } from '../../../utils/cssVar';
+import './colors.css';
 
 export function YearBarChart({ data, onSelect }) {
-  const maxCount = Math.max(...data.map((d) => d.count));
-
   return (
     <div className="dashboard-chart">
       <h2>Songs by Release Year</h2>
@@ -12,8 +10,8 @@ export function YearBarChart({ data, onSelect }) {
         categories={data.map((d) => d.year)}
         values={data.map((d) => d.count)}
         rotateLabels
-        // Delete this prop to go back to the shared theme color.
-        color={(params) => heatColor(params.value, maxCount, chartTheme.accent)}
+        color={cssVar('--chart-year-color')}
+        emphasisColor={cssVar('--chart-year-emphasis-color')}
         onClickCategory={(year) => onSelect({ year })}
       />
     </div>

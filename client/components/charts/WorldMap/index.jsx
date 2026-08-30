@@ -12,12 +12,13 @@ let worldMapRegistered = false;
 
 export function WorldMap({
   points,
-  // Default: the shared theme color — omit these two props entirely to
-  // revert a chart to it. Either can also be an echarts-style callback
-  // `(params) => color` (params.value, params.dataIndex, ...) instead of a
-  // flat string, for a color that depends on each point's own data.
-  color = chartTheme.accent,
-  emphasisColor = chartTheme.emphasis,
+  // Default: the shared theme colors — omit any of these to revert just
+  // that one to the theme. `color`/`emphasisColor` can also be an
+  // echarts-style callback `(params) => color` (params.value,
+  // params.dataIndex, ...) instead of a flat string, for a color that
+  // depends on each point's own data.
+  color = chartTheme.accent, // the bubble itself
+  emphasisColor = chartTheme.emphasis, // the bubble on hover
   formatTooltip = (p) => `${p.name}: ${p.value[2]}`,
   onPointClick,
 }) {
@@ -48,12 +49,21 @@ export function WorldMap({
         geo: {
           map: 'world',
           roam: true,
+          // Fully non-interactive on purpose — no hover highlight, label, or
+          // tooltip for bare landmass. The bubbles (series below) are a
+          // separate layer drawn on top and keep their own hover behavior
+          // untouched; this only silences the base map shapes themselves.
+          // (Matching regions by name to re-enable hover just for countries
+          // with data was considered and rejected — this map's own region
+          // names don't reliably match countryLabel()'s output, e.g. South
+          // Korea is just "Korea" here, so name-matching would silently
+          // miss real countries.)
+          silent: true,
           itemStyle: {
             areaColor: chartTheme.bgElevated,
             borderColor: chartTheme.textMuted,
             borderWidth: 1,
           },
-          emphasis: { itemStyle: { areaColor: chartTheme.border } },
         },
         series: [
           {
@@ -65,9 +75,12 @@ export function WorldMap({
             symbolSize: (val) => Math.sqrt(val[2]) * 3 + 4,
             itemStyle: { color, opacity: 0.7 },
             cursor: onPointClick ? 'pointer' : 'default',
+            // scale: false — the tooltip already names the country on
+            // hover, so no on-map label either; and no size-grow on top of
+            // our own already-large sqrt-scaled sizing.
             emphasis: {
+              scale: false,
               itemStyle: { color: emphasisColor, opacity: 1 },
-              label: { show: true, formatter: (p) => p.name, color: chartTheme.text },
             },
           },
         ],

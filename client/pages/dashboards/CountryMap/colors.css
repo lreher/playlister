@@ -3,6 +3,6 @@
    it. Not shared with any other chart, so they live here rather than in
    client/index.css. */
 :root {
-  --chart-year-color: #03923589; /* the bars themselves */
-  --chart-year-emphasis-color: #039235; /* a bar on hover */
+  --chart-country-color: #539a6c89; /* the bubble itself */
+  --chart-country-emphasis-color: #539a6cb6; /* the bubble on hover */
 }

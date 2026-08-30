@@ -1,4 +1,6 @@
 import { BarChart } from '../../../components/charts/BarChart';
+import { cssVar } from '../../../utils/cssVar';
+import './colors.css';
 
 function monthRange(monthStr) {
   const [year, month] = monthStr.split('-').map(Number);
@@ -15,6 +17,8 @@ export function LikedBarChart({ data, onSelect }) {
         categories={data.map((d) => d.month)}
         values={data.map((d) => d.count)}
         rotateLabels
+        color={cssVar('--chart-liked-color')}
+        emphasisColor={cssVar('--chart-liked-emphasis-color')}
         onClickCategory={(month) => {
           const { from, to } = monthRange(month);
           onSelect({ addedFrom: from, addedTo: to });

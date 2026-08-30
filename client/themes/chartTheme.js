@@ -16,7 +16,12 @@ export function baseChartOption() {
     textStyle: { color: chartTheme.text, fontFamily: 'Inter, sans-serif' },
     grid: { left: 50, right: 20, top: 20, bottom: 60 },
     tooltip: {
-      trigger: 'axis',
+      // 'item', not 'axis' — 'axis' pops the tooltip up anywhere in a
+      // category's column, even off the bar itself; 'item' only fires
+      // hovering the bar's actual rendered shape. Shared by every bar
+      // chart via BarChart, same "only real data triggers hover feedback"
+      // rule as WorldMap's geo.silent.
+      trigger: 'item',
       backgroundColor: chartTheme.bgElevated,
       borderColor: chartTheme.border,
       textStyle: { color: chartTheme.text },
