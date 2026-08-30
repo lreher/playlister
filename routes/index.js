@@ -9,22 +9,30 @@ const router = FindMyWay();
 // Register static routes
 registerStaticRoutes(router);
 
-router.on('GET', '/login', (req, res) => {
-  res.writeHead(302, { Location: spotify.getAuthorizeUrl() });
-  res.end();
-});
-
-router.on('GET', '/callback', async (req, res) => {
-  const code = getQueryParams(req).get('code');
-  try {
-    await spotify.exchangeCodeForTokens(code);
-    res.writeHead(302, { Location: '/' });
+// Only registered when explicitly enabled — these two overwrite the single
+// stored Spotify token row unconditionally, with no per-visitor session to
+// scope that to. Fine on localhost; on a public deploy, anyone who visited
+// /login and completed their own Spotify consent would silently clobber
+// the real stored token. Flip ENABLE_LOGIN on temporarily (one-time login,
+// or whenever the refresh token needs replacing), then back off.
+if (process.env.ENABLE_LOGIN === 'true') {
+  router.on('GET', '/login', (req, res) => {
+    res.writeHead(302, { Location: spotify.getAuthorizeUrl() });
     res.end();
-  } catch (err) {
-    res.writeHead(500, { 'Content-Type': 'text/plain' });
-    res.end(err.message);
-  }
-});
+  });
+
+  router.on('GET', '/callback', async (req, res) => {
+    const code = getQueryParams(req).get('code');
+    try {
+      await spotify.exchangeCodeForTokens(code);
+      res.writeHead(302, { Location: '/' });
+      res.end();
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end(err.message);
+    }
+  });
+}
 
 router.on('GET', '/api/songs', async (req, res) => {
   try {

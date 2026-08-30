@@ -1,7 +1,7 @@
 # Playlister
 
 Pulls your entire Spotify library — Liked Songs plus every playlist — into a local,
-Spotify-agnostic JSON database, enriched with country of origin, genre, and popularity.
+Spotify-agnostic SQLite database, enriched with country of origin, genre, and popularity.
 Browse and filter it in a List tab, or explore it visually in a Dashboards tab.
 
 ## Setup
