@@ -1,11 +1,13 @@
 // Chart-specific theming, built on the app's global palette. `emphasis` (a
-// chart's hover/click color) has no CSS equivalent — it's chart-only, so it
-// lives here rather than in globalTheme.
+// chart's hover/click color) isn't used by any DOM element, so it's not in
+// globalTheme's set — but it's still declared in index.css's :root
+// (--chart-emphasis) purely so it gets a color picker, same as the rest.
 import { globalTheme } from './globalTheme';
+import { cssVar } from '../utils/cssVar';
 
 export const chartTheme = {
   ...globalTheme,
-  emphasis: '#f5a623',
+  emphasis: cssVar('--chart-emphasis'),
 };
 
 export function baseChartOption() {

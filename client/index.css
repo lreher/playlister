@@ -5,6 +5,13 @@
   --text-muted: #b3b3b3;
   --accent: #1db954;
   --border: #282828;
+
+  /* Shared across all charts (client/themes/chartTheme.js reads this at load
+     time via client/utils/cssVar.js) — no DOM element actually uses it, it
+     just lives here so it's editable with a color picker instead of hidden
+     inside JS. A chart's own one-off colors (not shared) live in that
+     chart's own folder instead — e.g. YearBarChart/colors.css. */
+  --chart-emphasis: #f5a623;
 }
 
 * {

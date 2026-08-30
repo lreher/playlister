@@ -8,7 +8,7 @@ const MIME_TYPES = {
   '.json': 'application/json',
 };
 
-const STATIC_FILES = ['index.html', 'style.css', 'world.geo.json', 'bundle.js'];
+const STATIC_FILES = ['index.html', 'world.geo.json', 'bundle.js', 'bundle.css'];
 
 function serveStatic(filename) {
   const contentType = MIME_TYPES[path.extname(filename)] || 'application/octet-stream';

@@ -1,0 +1,5 @@
+/* This chart's own color — see style.js. Not shared with any other chart,
+   so it lives here rather than in the global client/index.css. */
+:root {
+  --chart-year-hot: #303aff;
+}

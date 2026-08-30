@@ -12,6 +12,10 @@ let worldMapRegistered = false;
 
 export function WorldMap({
   points,
+  // Default: the shared theme color — omit these two props entirely to
+  // revert a chart to it. Either can also be an echarts-style callback
+  // `(params) => color` (params.value, params.dataIndex, ...) instead of a
+  // flat string, for a color that depends on each point's own data.
   color = chartTheme.accent,
   emphasisColor = chartTheme.emphasis,
   formatTooltip = (p) => `${p.name}: ${p.value[2]}`,
