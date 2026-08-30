@@ -364,6 +364,22 @@ Spotify has no artist-location field at all — this entire pipeline is external
 2. **MusicBrainz fallback lookup** — for a match with no `country` in the search result
    (a known MusicBrainz search-index staleness quirk), a direct per-MBID lookup often
    recovers it.
+   - **503 resilience** (`sources/musicbrainz.js` + `resolveCountries()`): a `503`
+     specifically (MusicBrainz overloaded/rate-limiting, not a hard failure) gets retried
+     up to 3x with exponential backoff (2s→4s→8s) inside `musicbrainz.js` before
+     surfacing — other statuses (4xx etc.) fail immediately, retrying wouldn't fix those.
+     `resolveCountries()`'s circuit breaker trips after **10 total 503s seen** across a
+     run (search batches and fallback lookups share one breaker) — **cumulative, not
+     consecutive call failures**. That distinction was a real bug caught live: under
+     sustained load, almost every individual call recovers within 1-2 retries, so counting
+     only calls that fully fail never trips at all — every "successful" call still burned
+     a 503 first, invisible to a consecutive-failure counter. Fixed by having
+     `musicbrainz.js` report *every* 503 it sees via an `onRetry` callback, recovered or
+     not, so the breaker sees the true rate of distress. Once tripped, MusicBrainz stops
+     getting called for the rest of that sync run; skipped artists already have a
+     `{country: null}` cache entry via the existing backfill step, so they fall straight
+     into the Wikidata cascade below instead of wasting requests. No cross-run state —
+     next `npm run sync` retries MusicBrainz fresh for anything still unresolved.
 3. **Wikidata exact-match batch** — SPARQL `VALUES`-batched query (~50 artists/request),
    POST to `https://query.wikidata.org/sparql`. **Critical detail**: many real, notable
    artists (e.g. Radiohead) have **no plain `en` label** in Wikidata — matching only

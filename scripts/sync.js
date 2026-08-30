@@ -10,6 +10,7 @@ const playlistsDb = require('../db/playlists');
 
 const MB_BATCH_SIZE = 15;
 const MB_REQUEST_DELAY_MS = 1100;
+const MB_CIRCUIT_BREAKER_THRESHOLD = 10;
 const WIKIDATA_BATCH_SIZE = 50;
 const WIKIDATA_REQUEST_DELAY_MS = 500;
 const WIKIDATA_FUZZY_DELAY_MS = 1000;
@@ -19,6 +20,27 @@ const GENRE_REQUEST_DELAY_MS = 250;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Trips after `threshold` total 503s seen across a resolveCountries() run —
+// cumulative, not consecutive-failures. That distinction matters: under
+// sustained load, musicbrainz.js's own per-request retry usually recovers
+// within 1-2 tries, so almost every *call* still "succeeds" even while
+// nearly every *request* is bouncing off a 503 first. Counting only calls
+// that fully fail never sees that — this counts every 503 sighting
+// (musicbrainz.js's onRetry fires on each one, recovered or not), so
+// sustained distress trips it even when no single call outright fails.
+function createCircuitBreaker(threshold) {
+  let count503s = 0;
+  let tripped = false;
+  return {
+    get tripped() {
+      return tripped;
+    },
+    recordRetry() {
+      if (++count503s >= threshold) tripped = true;
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -238,11 +260,20 @@ async function resolveCountries(artistList) {
 
   const needsFallback = [];
   let searched = 0;
+  const breaker = createCircuitBreaker(MB_CIRCUIT_BREAKER_THRESHOLD);
 
   for (let i = 0; i < toResolve.length; i += MB_BATCH_SIZE) {
+    if (breaker.tripped) {
+      console.warn(
+        `[artists] MusicBrainz unavailable (${MB_CIRCUIT_BREAKER_THRESHOLD} total 503s) — ` +
+          `skipping remaining ${toResolve.length - i} artists straight to Wikidata`
+      );
+      break;
+    }
+
     const batch = toResolve.slice(i, i + MB_BATCH_SIZE);
     try {
-      const results = await musicbrainz.resolveBatch(batch);
+      const results = await musicbrainz.resolveBatch(batch, breaker.recordRetry);
       for (const [id, result] of Object.entries(results)) {
         artistsDb.upsert(id, { name: result.name, country: result.country });
         if (result.mbid && result.country === null) {
@@ -268,13 +299,23 @@ async function resolveCountries(artistList) {
     }
   }
 
-  if (needsFallback.length > 0) {
+  if (needsFallback.length > 0 && breaker.tripped) {
+    console.warn(`[artists] MusicBrainz unavailable — skipping ${needsFallback.length} fallback lookups`);
+  } else if (needsFallback.length > 0) {
     console.log(`[artists] following up on ${needsFallback.length} artists missing country data`);
     let recovered = 0;
 
     for (const { id, mbid } of needsFallback) {
+      if (breaker.tripped) {
+        console.warn(
+          `[artists] MusicBrainz unavailable (${MB_CIRCUIT_BREAKER_THRESHOLD} total 503s) — ` +
+            `stopping fallback lookups early`
+        );
+        break;
+      }
+
       try {
-        const country = await musicbrainz.lookupArtistCountry(mbid);
+        const country = await musicbrainz.lookupArtistCountry(mbid, breaker.recordRetry);
         if (country) {
           artistsDb.upsert(id, { country });
           recovered++;
