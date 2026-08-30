@@ -3,103 +3,122 @@
 Personal local tool that pulls your **entire Spotify library** — Liked Songs plus every
 playlist — into a rich, filterable, Spotify-agnostic local dataset (country of origin,
 genre, popularity, decade, duration, playlist membership, etc.). Node.js, zero framework,
-vanilla JS frontend, flat JSON files as the database. No git repo.
+vanilla JS frontend, SQLite as the database. Git repo on GitHub (`lreher/playlister`).
 
 Read this file first when picking this project back up — it has the decisions and
 hard-won findings that aren't obvious from the code alone.
 
-## Architecture reorg — complete, including a `db/` internal redesign
+## Data layer: SQLite (replaced the flat-JSON `db/` design — Aug 2026)
 
-The file-layout reorg is **done and verified working end-to-end**. `lib/` and `store/`
-no longer exist. If you're reading old context that mentions `lib/songStore.js`,
-`lib/artistStore.js`, `lib/playlistStore.js`, `lib/sources/`, `lib/songs.js`,
-`lib/songQuery.js`, `controllers/artists.js`/`controllers/playlists.js`, a top-level
-`store/`, or `db/*.js` files built on `utils/cache.js`'s old `createCache(filename,
-defaultValue)` API with `getById`/`has`/`upsert`/`save()` (an intermediate shape from
-this session, since superseded), those are gone — use this section instead.
+**The JSON-file era is over.** `data/songs.json`/`artists.json`/`playlists.json`/
+`tokens.json` are no longer read by the app at all — left on disk untouched (never
+deleted) as a natural backup, but superseded. If you're reading old context describing
+`db/db.js` (a generic JSON-file primitive), `utils/cache.js` (in-memory memoization), or
+`db/*.js` methods built on those, that entire design is gone — this section replaces it.
+The actual data now lives in **`data/playlister.db`**, a real SQLite database.
 
-**Current layout** (verified end-to-end after the last redesign: server boots,
-`/api/songs` → 6199 songs, `/api/filters` → 93 countries / 468 genres / 48 playlists /
-4489 artists, `/api/stats` → 9 decades / 93 countries / 74 years, playlist-filter query →
-204 songs for the tested playlist — all matching prior validated numbers; `db.js`'s
-`read`/`write`/`upsert` and `utils/cache.js`'s memoization were also each proven in
-isolation against scratch files, not just asserted):
+**Why, and the decisions made getting here** (all explicitly confirmed before building):
+- **Driver: `node:sqlite`** (Node's built-in module), not `better-sqlite3`. Zero new
+  dependencies — matches this project's "minimal, justified tooling" bar. Trade-off
+  accepted knowingly: it's still flagged experimental in this Node version (prints an
+  `ExperimentalWarning` on every process start) — the API surface could still change.
+  Synchronous, like the JSON-era `db.js` was, so no ripple effect into async/await
+  plumbing elsewhere.
+- **Migration, not a fresh start**: `scripts/migrate-to-sqlite.js` (`npm run migrate`,
+  one-time) reads the old JSON files and populates the new tables — preserves the
+  country/genre/popularity enrichment (real API work, not something to casually discard).
+  Idempotent (`ON CONFLICT DO NOTHING`/`INSERT OR IGNORE` throughout) and read-only
+  against the JSON, so re-running it is always safe.
+- **Filtering moved into real SQL**, not just a storage-format swap. `controllers/
+  songs.js` used to load every song into a JS array and `.filter()` it; it now builds a
+  parameterized `WHERE`/`GROUP BY`/`LIMIT ... OFFSET` query per request. This is the
+  reason the schema below has a view + a registered SQL function, not just plain tables.
 
-- **`db/db.js`** — the one generic, low-level file primitive everything else is built
-  on: `setFile(relativePath)` → `{ read(default), write(data), upsert(record) }`. Treats
-  every data file as an array of records with an `id` field. No caching, no domain logic
-  — every call touches disk directly, on purpose (explicit call: this is a personal,
-  single-process toy app, not a system where write-batching for performance or
-  crash-resilience is worth the complexity — "just write to disk, it's fine"). This is
-  the piece Lucas hand-sketched the shape of and asked to be built out for real; it
-  directly replaces having a bespoke `upsert` reimplemented per entity file (which is
-  what the previous, superseded version of `db/artists.js` did).
-- **`db/songs.js`, `db/artists.js`, `db/playlists.js`** — thin entity-specific wrappers
-  combining `db/db.js` (disk I/O) with `utils/cache.js` (in-memory memoization so
-  `getAll()` doesn't re-read disk every call). Each exposes `getAll()`/`getById(id)` plus
-  whatever write shape actually fits that entity's real usage — **not** forced into one
-  identical shape:
-  - `songs.js`: `mergeTracks(items)` — dedupes a batch of raw Spotify track items,
-    skips blank catalog-removed stubs, writes once via `db.write()` (a genuine batch
-    operation, not a fit for per-record `db.upsert()`).
-  - `artists.js`: `upsert(id, patch)` — shallow-merges into one artist's record via
-    `db.upsert()`, immediately re-reads the file into the cache afterward so it always
-    exactly mirrors disk. Also `getCountry`/`getGenres`/`getPopularity`/`getFollowers` —
-    field-specific reads with per-field defaults (`null` for scalars, `[]` for the genres
-    array) — proven load-bearing, not just style: swapping these for raw
-    `getById(id)?.field` produces `undefined` for an artist that hasn't been
-    genre-resolved yet, which corrupts `flatMap`-based genre aggregation with stray
-    `null` entries in the dashboard/filter dropdown.
-  - `playlists.js`: `set(playlists)` — whole-collection replace via `db.write()`, not a
-    per-record upsert. Deliberate: a playlist sync run always recomputes every playlist's
-    *current* state in one pass, including detecting deleted/unfollowed playlists that
-    need to disappear — a per-record upsert can only add/update, never remove, so it
-    can't express that. Also exports `LIKED_SONGS_ID`, a well-known key constant.
-  - `artists.json`'s **on-disk shape was migrated** from an object keyed by artist ID
-    (`{ [id]: {...} }`) to an array of records with an `id` field (`[{ id, ... }]`), to
-    match `songs.json`/`playlists.json` and let `db/db.js`'s `upsert`/`read`/`write` work
-    identically for all three — no special-cased object-shape handling. Migrated with a
-    timestamped backup left at `data/artists.json.backup-pre-array-migration-<ts>`
-    (4502 records, verified count-preserved before deleting nothing).
-- **`utils/cache.js`** — reduced to a generic memoization primitive with zero file
-  knowledge: `createCache()` returns a callable — no args reads the current value
-  (`undefined` if nothing cached yet), called with a value stores and returns it. No
-  filename, no defaultValue — that's `db/db.js`'s job now.
-- **`data/`** — the JSON files: `songs.json`, `artists.json`, `playlists.json`,
-  `tokens.json`. Sibling to `db/`, which holds only code. `db/db.js`'s `setFile()`
-  resolves paths relative to itself (`db/`), so each entity file passes e.g.
-  `'../data/songs.json'`.
-- **`db/tokens.js`** — Spotify OAuth token storage, built on `db/db.js` like the other
-  three, but **not** a collection — just one stored object (no `id`, no array), so it
-  doesn't fit the `getAll`/`getById`/`upsert` shape. Exposes the minimal thing that
-  actually matches: `get()`/`set(tokens)`. Replaces the old `auth/tokenStore.js`
-  (removed entirely, along with the now-empty `auth/` directory) — `sources/spotify.js`
-  calls `db/tokens.js` directly now. Verified live: `/api/songs` (which calls
-  `getValidAccessToken()` on every request) still returned real data post-change, so the
-  full token-read chain was exercised, not just asserted.
-- **`controllers/songs.js`** — unchanged by this redesign, on purpose: it only calls
-  `getAll`/`getById`/`getCountry`/`getGenres`/`getPopularity`/`getFollowers`, all of
-  which kept the same names and signatures across the rewrite. That it needed zero
-  changes is a decent signal the `db/` interface boundary is in the right place.
-- **`scripts/sync.js`** — the *only* home for sync/orchestration logic, all folded into
-  one file per Lucas's explicit instruction (not split into `syncSongs.js`/
-  `syncPlaylists.js`/etc. — that earlier plan was superseded). Contains: `syncSongs()`,
-  `syncPlaylists()` + raw-fetch helpers (playlist pagination, snapshot_id reconciliation,
-  Liked-Songs pseudo-playlist seeding), `uniqueArtistsFromSongs()`, `resolveCountries()`
-  (MusicBrainz→Wikidata cascade), `resolveIsrcFallback()`, `resolveArtistDetails()`
-  (Spotify genre/popularity batch), and `main()` sequencing all of them. Updated for the
-  new `db/artists.js` API: no more `.save()` (every `upsert()` persists immediately) or
-  `.has()` (use `!!getById(id)` instead).
-- **`sources/`** — raw external API calls, no orchestration/pagination-decision logic.
-  `musicbrainz.js`, `wikidata.js` (self-contained), `spotify.js` (OAuth + token refresh;
-  still has one unused raw-page helper, `getLikedSongsPage` — `scripts/sync.js` inlines
-  its own `fetch` calls instead; a possible later cleanup, not currently planned).
+**Schema** (`db/database.js`, `CREATE TABLE IF NOT EXISTS` — safe to require multiple
+times, e.g. from both the server and `scripts/sync.js`):
+```
+artists(id PK, name, country, popularity, followers, details_resolved)
+artist_genres(artist_id, genre)                         -- many-valued
+songs(id PK, name, album_name, album_release_date, album_type,
+      added_at, isrc, duration_ms, explicit, spotify_url)
+song_artists(song_id, artist_id, position)                -- position 0 = primary
+playlists(id PK, name, owner_name, public, collaborative, snapshot_id)
+playlist_tracks(playlist_id, song_id, added_at)
+tokens(id=1, access_token, refresh_token, expires_at)        -- singleton row
+```
+- `details_resolved` (on `artists`) replaces the old JSON-era `'genres' in artist`
+  existence check — a real SQL row always "has" every column (just possibly `NULL`), so
+  there's no way to tell "never resolved" from "resolved to genuinely empty" without an
+  explicit flag. Set to `1` whenever an `upsert()` patch includes `genres` or
+  `popularity` (they only ever arrive together, from the one Spotify details pass).
+- **No `PRAGMA foreign_keys`** — deliberately left off (SQLite's own default). Artist
+  resolution is a separate, later pass from song ingestion, same relationship the JSON
+  files had; a `song_artists` row can reference an artist not yet resolved, and every
+  read is a `LEFT JOIN` that just produces `NULL` until it is.
+- **`song_details` view** — computes what used to be read-time JS derivations
+  (`songCountry`/`songYear`/`songDecade`) as real SQL, joining in the primary artist's
+  `country`/`popularity`/`followers` and computing `year`/`decade` from
+  `album_release_date` via `substr()`. `country` is
+  `COALESCE(primary_artist.country, isrc_country(song.isrc))` — `isrc_country` is
+  `utils/isrcCountry.js`'s existing pure function, registered as a real SQL function via
+  `db.function('isrc_country', fn)` (proved working in isolation before relying on it:
+  a registered function referenced inside a view, queried later — including through
+  `COALESCE` returning `NULL` correctly — works fine on this Node version, using the
+  2-argument form; a 3-arg `{ deterministic: true }` options form does **not** work here,
+  throws `TypeError`). This means country/year/decade are always live-computed, matching
+  the old semantics exactly — no denormalized copy on the song row to keep in sync
+  whenever an artist's country gets resolved later.
+- Genre and playlist filters are `EXISTS` subqueries in `controllers/songs.js`, not view
+  columns — both are many-valued (a song can match on any of several artists' genres, or
+  need checking against one specific playlist), which doesn't fit a flat view row.
+- Artist display names (`"A, B, C"`) and a song's full genre set are per-row correlated
+  subqueries using `GROUP_CONCAT` — proved two specific patterns work on this SQLite
+  build before relying on them: `GROUP_CONCAT` respects the order of an `ORDER BY`'d
+  subquery fed into it (needed so the primary artist stays first in the displayed list),
+  and `GROUP_CONCAT(DISTINCT ...)` correctly dedupes (needed since genres repeat across
+  a song's artists).
+
+**Real bug caught by verification, not by inspection**: the first migration run crashed
+with a `NOT NULL constraint failed: artists.name` — two orphaned entries in the old
+`artists.json` (referenced by zero actual songs) had `name: null`, a leftover from before
+`mapTrack` started filtering null-named track artists. Fixed by coalescing to `''` during
+migration (matching a sibling entry that already legitimately had `""`) rather than
+crashing or silently dropping the rows.
+
+**`db/songs.js`, `db/artists.js`, `db/playlists.js`, `db/tokens.js`** — kept the exact
+same exported function names/signatures as the JSON era (`getAll`/`getById`/
+`mergeTracks`/`upsert`/`set`/`get`/`set`), now backed by prepared statements against
+`db/database.js`'s connection instead of file reads. `mergeTracks` (in `db/songs.js`) now
+also stub-creates a minimal `artists` row (`id`+`name` only) for every artist it sees on
+a new song — this is new behavior versus the JSON era, and it's what let
+`scripts/sync.js` drop its old `uniqueArtistsFromSongs()` helper entirely: every artist
+already has a row by the time `resolveCountries()`/`resolveArtistDetails()` run, so the
+roster is just `artistsDb.getAll()` directly, no separate derivation from songs needed.
+
+**Query-building boundary**: `controllers/songs.js` builds and runs its own SQL directly
+against `db/database.js`'s connection + the `song_details` view for `getSongs`/
+`getFilterOptions`/`getStats` — this is deliberate, not a layering violation. Which query
+param maps to which `WHERE` clause is business logic (always lived in `controllers/`,
+just expressed as JS `.filter()` calls before); `db/songs.js` stays focused on what's
+genuinely reusable data-access (`getById`, and the two write operations with real
+business rules — dedup, whole-collection-replace).
+
+**Verified thoroughly, not just spot-checked**: before migrating, ground-truth baseline
+numbers were captured by requiring the *old* (pre-rewrite) `controllers/songs.js` +
+`db/*.js` straight from git history and running them against the real JSON — not
+re-derived by hand, the actual old logic. Every number matched post-migration:
+totals, all seven filter-option list lengths + three ranges, all five stats aggregate
+lengths, four different single-filter counts, one combined-filter count, and one full
+song object compared field-by-field — then the same checks repeated a third time through
+the live HTTP server. `data/playlister.db` and any future `.db-*` SQLite sidecar files
+fall under the existing blanket `data/` gitignore entry, no `.gitignore` change needed.
+
 Naming history worth knowing if it comes up again: the data-access layer went
 `repositories/` (rejected, didn't describe what the files do) → `controllers/` (rejected
 once it collided with the actual controller layer) → `store/` → **`db/`**, settling once
 the JSON files themselves moved out into their own `data/` directory, freeing
 `controllers/` for its real meaning (the `songQuery.js`-descended read-orchestration
-layer). No further reorg work is open — any future refactor here is a fresh discussion.
+layer).
 
 ## Quick start
 ```
@@ -136,9 +155,12 @@ this section covers what each piece *does*, not where it lives; see above for pa
 - `routes/static.js` — static-file serving, split out of `routes/utils.js` on purpose
   (a `utils.js` is for genuinely cross-cutting helpers, not a dumping ground for
   whatever got extracted — `serveStatic` is single-purpose, so it gets its own file).
-  `STATIC_FILES` (`index.html`, `style.css`, `world.geo.json`, `bundle.js`) + a MIME-type
-  map keyed by extension + `registerStaticRoutes(router)`, which loops the list
-  registering one route per file (`index.html` → `/`, everything else → `/<filename>`).
+  `STATIC_FILES` (`world.geo.json`, `bundle.js`, `bundle.css`) + a MIME-type map keyed by
+  extension + `registerStaticRoutes(router)`. Separately, `APP_ROUTES` (`/`, `/dashboards`)
+  each serve `index.html` — real server routes needed so a direct load/refresh of e.g.
+  `/dashboards` works, not just clicking there from within the app; `App.jsx` reads
+  `window.location.pathname` on mount to pick the initial tab, and calls
+  `history.pushState` on every tab switch (plus a `popstate` listener for back/forward).
   Serves out of `static/`, not `public/` (see "Client architecture" below).
 - `controllers/songs.js` — all the actual `/api/songs` (filter+sort+paginate),
   `/api/filters` (distinct option lists + ranges), and `/api/stats` (dashboard
@@ -146,43 +168,40 @@ this section covers what each piece *does*, not where it lives; see above for pa
   taking/returning plain objects — no HTTP concerns. Extracted from `index.js` when it
   grew past ~290 lines of routing mixed with business logic.
 - `sources/spotify.js` — OAuth (Authorization Code flow), token read/write/refresh.
-- `db/tokens.js` — `data/tokens.json` (gitignored) read/write, via `get()`/`set()`.
-- `db/songs.js` — pure access to `data/songs.json` (gitignored), the flat pool of every
-  track seen from any source: `getAll()`, `getById(id)`, `mergeTracks(items)` (the
-  shared dedupe-and-append helper, called from `scripts/sync.js` for both Liked Songs and
-  playlist tracks; a batch write via `db/db.js`'s `write()`, not a per-record upsert).
-- `db/playlists.js` — pure access to `data/playlists.json` (gitignored), all playlists +
-  a "liked-songs" pseudo-playlist: `getAll()`, `getById(id)`, `set(playlists)` (a
-  whole-collection replace — needed so deleted/unfollowed playlists can disappear, which
-  a per-record upsert can't express), `LIKED_SONGS_ID`. See the dedicated Playlists
-  section below.
-- `db/artists.js` — pure access to `data/artists.json` (gitignored, an **array** of
-  `{id, name, country, genres, popularity, followers}` records — not object-keyed by ID
-  the way it used to be): `getAll()`, `getById(id)`, `getCountry`/`getGenres`/
-  `getPopularity`/`getFollowers` (field-specific reads with per-field defaults),
-  `upsert(id, patch)` (merges into one record, persists immediately). No orchestration —
-  the resolution cascade lives in `scripts/sync.js` now (see below).
-- `db/db.js` — the generic file primitive all three of the above are built on:
-  `setFile(relativePath)` → `{ read, write, upsert }`. See "Architecture reorg" above for
-  the full rationale.
+- `db/database.js` — the SQLite connection + schema, everything else in `db/` is built
+  on it. See "Data layer: SQLite" above for the full rationale.
+- `db/tokens.js` — the OAuth token singleton row, via `get()`/`set()`.
+- `db/songs.js` — `getAll()`, `getById(id)`, `mergeTracks(items)` (the shared dedupe-
+  and-append helper, called from `scripts/sync.js` for both Liked Songs and playlist
+  tracks — also stub-creates a minimal `artists` row for any new artist it sees).
+- `db/playlists.js` — `getAll()`, `getById(id)`, `set(playlists)` (a whole-collection
+  replace — needed so deleted/unfollowed playlists can disappear, which a per-record
+  upsert can't express), `LIKED_SONGS_ID`. See the dedicated Playlists section below.
+- `db/artists.js` — `getAll()`, `getById(id)`, `getCountry`/`getGenres`/`getPopularity`/
+  `getFollowers` (field-specific reads with per-field defaults), `upsert(id, patch)`
+  (shallow-merges into one record, persisted immediately). No orchestration — the
+  resolution cascade lives in `scripts/sync.js` now (see below).
 - `sources/musicbrainz.js` — `resolveBatch()`, `lookupArtistCountry()`.
 - `sources/wikidata.js` — `resolveWikidataBatch()`, `searchWikidataEntity()`,
   `lookupCountriesByQids()`.
 - `utils/isrcCountry.js` — pure function, derives a country code from a track's ISRC
-  prefix (no network call).
+  prefix (no network call). Also registered as a real SQL function
+  (`db/database.js`'s `isrc_country`) for the `song_details` view to use directly.
 - `scripts/sync.js` — the `npm run sync` entry point, and the **only** place
   sync/orchestration logic lives (explicit design decision, folded from what was
   previously spread across `db/`'s predecessor modules): `syncSongs()`, `syncPlaylists()`,
-  `uniqueArtistsFromSongs()`, `resolveCountries()` (MB→Wikidata cascade),
-  `resolveIsrcFallback()`, `resolveArtistDetails()` (Spotify genre/popularity), and
-  `main()` sequencing all of them: sync liked songs → sync playlists (adds any
-  playlist-only tracks) → derive artist roster from local songs → resolve countries →
-  ISRC fallback → resolve genres/popularity/followers.
+  `resolveCountries()` (MB→Wikidata cascade), `resolveIsrcFallback()`,
+  `resolveArtistDetails()` (Spotify genre/popularity), and `main()` sequencing all of
+  them: sync liked songs → sync playlists (adds any playlist-only tracks) → resolve
+  countries for every artist on record (already fully populated by this point via
+  `mergeTracks`'s stub-creation, no separate roster-derivation step needed) → ISRC
+  fallback → resolve genres/popularity/followers.
 - `static/` — served, built output + static assets: `index.html` (hand-authored — just a
-  `<div id="root">` + Google Fonts/ECharts CDN tags + `bundle.js`), `style.css`
-  (hand-authored, unchanged from the vanilla era — dark, Spotify-green accent, Inter font),
+  `<div id="root">` + Google Fonts/ECharts CDN tags + `bundle.js`/`bundle.css`),
   `world.geo.json` (world country boundaries, ECharts' own test-data file, ~1MB),
-  `bundle.js` (esbuild output, **gitignored** — a build artifact, not source).
+  `bundle.js`/`bundle.css` (esbuild output, **gitignored** — build artifacts, not
+  source; see "Client architecture" below for where the CSS source actually lives —
+  `client/index.css` plus each chart's own colocated `colors.css`).
 - `client/` — the SPA source. See "Client architecture" below.
 
 ## Client architecture (Preact + esbuild — replaced the vanilla `public/` setup)
@@ -264,8 +283,9 @@ because ECharts can be fully self-hosted (Plotly's bubble-map basemap fetches fr
 Plotly's own CDN at runtime by default). Independent of List's active filters — always
 shows whole-library stats.
 
-- Backend: `GET /api/stats` (`index.js`) — pre-aggregates `songs.json` into
-  `yearCounts`, `popularityCounts` (bucketed by 10s), `countryCounts`. Browser never has
+- Backend: `GET /api/stats` (`controllers/songs.js`'s `getStats()`) — pre-aggregates via
+  SQL `GROUP BY` into `yearCounts`, `popularityCounts` (bucketed by 10s), `countryCounts`.
+  Browser never has
   to pull all ~5000 song rows just to draw charts.
 - Five charts (`client/pages/dashboards/`, lazy-loaded + cached on first tab switch — see
   "Client architecture" above): year/decade/liked-date/popularity histograms via the
@@ -280,28 +300,18 @@ shows whole-library stats.
 
 ## Data files (all gitignored — never commit, never delete without an explicit ask)
 
-The three live data files below now live in **`data/`** (`data/songs.json`, etc.) —
-sibling to `db/`, which holds only the access-function code, not the data itself. The
-backup/legacy files listed after them (`artist-countries.json` and friends) are still at
-the project root, untouched.
-
-- `songs.json` — flat pool of **every track ever seen from any source** (Liked Songs +
-  every playlist), deduped by Spotify track ID. Structurally unchanged by the playlists
-  feature — playlist membership lives externally in `playlists.json`, not on the song.
-  Per song: id, name, artists `[{id,name}]`, album `{name, releaseDate, albumType}`,
-  addedAt (when first seen — liked-date if from Liked Songs), isrc, durationMs, explicit,
-  spotifyUrl.
-- `playlists.json` — array of `{id, name, ownerName, public, collaborative, snapshotId,
-  tracks: [{id, addedAt}]}`. Includes a special `id: "liked-songs"` pseudo-playlist entry
-  so Liked Songs shows up in the same Playlist filter dropdown as real playlists.
-- `artists.json` — the **active** artist metadata cache (country/genres/popularity/followers).
+- `playlister.db` — the live SQLite database, **the actual source of truth now**. See
+  "Data layer: SQLite" above for the full schema.
+- `songs.json`, `artists.json`, `playlists.json`, `tokens.json` — the pre-SQLite era's
+  files. **No longer read by the app at all** — left on disk untouched as the natural
+  backup `scripts/migrate-to-sqlite.js` migrated from, not deleted. Kept for the same
+  reason `artist-countries.json` was: real, hard-won API work, not something to discard
+  casually.
 - `artist-countries.json` — original pre-rename file, kept on disk untouched as a backup
   (the user explicitly asked to preserve this — it represents a lot of hard-won API work).
 - `artists.json.backup-<timestamp>` — additional safety copy made before a risky edit.
 - `artist-countries copy.json` — an unexplained stray file noticed mid-session; not
   created deliberately by the assistant; left untouched, flagged to the user.
-- `tokens.json` — current Spotify OAuth session (access/refresh token + expiry), now in
-  `data/` like the other three, read/written via `db/tokens.js`.
 
 ## Playlists (full library, not just Liked Songs)
 
@@ -327,8 +337,8 @@ the project root, untouched.
   seed it correctly, before switching to incremental appends. Worth remembering: any
   "derive current membership from an incremental/append-only sync" design needs an
   explicit first-time full-seed path, or it silently starts from empty.
-- Playlist membership lives on the **playlist** (`tracks: [{id, addedAt}]`), not the song —
-  deliberately, so `songs.json` stays structurally untouched by this feature.
+- Playlist membership lives on the **playlist** (the `playlist_tracks` table), not the
+  song — deliberately, so the `songs` table stays structurally untouched by this feature.
 
 ## Spotify API — hard-won findings
 
@@ -351,7 +361,9 @@ the project root, untouched.
   Spotify's full saved-tracks endpoint (~101 pages) on every server restart during
   development. Fixed by: (a) never auto-triggering full walks on startup/login, (b)
   `syncSongs()`'s incremental newest-first stop-early logic, (c) deriving the artist
-  roster from local `songs.json` instead of a second Spotify walk.
+  roster from what's already stored locally instead of a second Spotify walk — originally
+  a `songs.json` derivation step, now free: `db/songs.js`'s `mergeTracks` stub-creates
+  every artist's row as songs come in, so `artistsDb.getAll()` already *is* the roster.
 
 ## Country-of-origin pipeline (in `scripts/sync.js`'s `resolveCountries()`, cascading, cheapest-first)
 
@@ -489,7 +501,4 @@ is more complete than the country rule).
 
 - **Client code cleanup** — **done**. Full Preact + esbuild SPA rewrite, see "Client
   architecture" above.
-- **Move to SQLite** — flat JSON files (`data/songs.json`, `artists.json`,
-  `playlists.json`) are the current datastore; the plan is to eventually migrate to
-  SQLite. Not started, no schema/migration design done yet — a fresh discussion when
-  picked up.
+- **Move to SQLite** — **done**. See "Data layer: SQLite" above.

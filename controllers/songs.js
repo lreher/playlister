@@ -1,51 +1,26 @@
-const songs = require('../db/songs');
-const artists = require('../db/artists');
-const isrcCountry = require('../utils/isrcCountry');
+const db = require('../db/database');
 const playlists = require('../db/playlists');
 
-function songGenres(song) {
-  return [...new Set(song.artists.flatMap((a) => artists.getGenres(a.id)))];
-}
+// Correlated subqueries reused by every song_details read below — the
+// view itself only covers one-to-one fields (a song has one primary
+// artist), these two are one-to-many (every artist on the track, every
+// genre across all of them) so they don't fit as plain view columns.
+const ARTIST_NAMES_SUBQUERY = `(
+  SELECT GROUP_CONCAT(name, ', ') FROM (
+    SELECT a.name FROM song_artists sa JOIN artists a ON a.id = sa.artist_id
+    WHERE sa.song_id = sd.id ORDER BY sa.position
+  )
+)`;
+const GENRES_SUBQUERY = `(
+  SELECT GROUP_CONCAT(DISTINCT ag.genre) FROM song_artists sa
+  JOIN artist_genres ag ON ag.artist_id = sa.artist_id WHERE sa.song_id = sd.id
+)`;
 
-function songYear(song) {
-  return song.album.releaseDate ? song.album.releaseDate.slice(0, 4) : null;
-}
-
-function songCountry(song) {
-  return artists.getCountry(song.artists[0]?.id) ?? isrcCountry.countryFromIsrc(song.isrc);
-}
-
-function songDecade(song) {
-  const year = songYear(song);
-  return year ? `${year.slice(0, 3)}0s` : null;
-}
-
-function enrichSong(song) {
-  return {
-    id: song.id,
-    name: song.name,
-    artists: song.artists.map((a) => a.name).join(', '),
-    album: song.album.name,
-    addedAt: song.addedAt,
-    country: songCountry(song),
-    genres: songGenres(song),
-    year: songYear(song),
-    decade: songDecade(song),
-    explicit: song.explicit,
-    durationMs: song.durationMs,
-    albumType: song.album.albumType,
-    spotifyUrl: song.spotifyUrl,
-    artistPopularity: artists.getPopularity(song.artists[0]?.id),
-    artistFollowers: artists.getFollowers(song.artists[0]?.id),
-    _artistNames: song.artists.map((a) => a.name),
-  };
-}
-
-// Filters, sorts (newest-added first), and paginates the local song
-// snapshot. All fields optional/nullable — omit a filter to not apply it.
-function getSongs({
-  limit = 50,
-  offset = 0,
+// Builds a parameterized WHERE clause from getSongs()'s filter object.
+// Every field optional/nullable — omit a filter to not apply it. Genre and
+// artist are EXISTS subqueries (a song can match on any of its artists,
+// not just the primary one — genre is a many-valued union across them).
+function buildWhere({
   genre,
   year,
   decade,
@@ -59,160 +34,189 @@ function getSongs({
   addedTo,
   popularityMin,
   popularityMax,
-} = {}) {
-  let filtered = songs.getAll().map(enrichSong);
+}) {
+  const clauses = [];
+  const params = [];
 
   if (genre) {
-    filtered = filtered.filter((s) => s.genres.some((g) => g.toLowerCase() === genre.toLowerCase()));
+    clauses.push(
+      `EXISTS (SELECT 1 FROM song_artists sa JOIN artist_genres ag ON ag.artist_id = sa.artist_id WHERE sa.song_id = sd.id AND lower(ag.genre) = lower(?))`
+    );
+    params.push(genre);
   }
   if (year) {
-    filtered = filtered.filter((s) => s.year === year);
+    clauses.push('sd.year = ?');
+    params.push(year);
   }
   if (decade) {
-    filtered = filtered.filter((s) => s.decade === decade);
+    clauses.push('sd.decade = ?');
+    params.push(decade);
   }
   if (country) {
-    filtered = filtered.filter((s) => s.country === country.toUpperCase());
+    clauses.push('sd.country = ?');
+    params.push(country.toUpperCase());
   }
   if (albumType) {
-    filtered = filtered.filter((s) => s.albumType === albumType);
+    clauses.push('sd.album_type = ?');
+    params.push(albumType);
   }
   if (artist) {
-    filtered = filtered.filter((s) => s._artistNames.some((name) => name.toLowerCase() === artist.toLowerCase()));
+    clauses.push(
+      `EXISTS (SELECT 1 FROM song_artists sa JOIN artists a ON a.id = sa.artist_id WHERE sa.song_id = sd.id AND lower(a.name) = lower(?))`
+    );
+    params.push(artist);
   }
   if (playlist) {
-    const playlistEntry = playlists.getById(playlist);
-    const trackIds = new Set(playlistEntry ? playlistEntry.tracks.map((t) => t.id) : []);
-    filtered = filtered.filter((s) => trackIds.has(s.id));
+    clauses.push('EXISTS (SELECT 1 FROM playlist_tracks pt WHERE pt.playlist_id = ? AND pt.song_id = sd.id)');
+    params.push(playlist);
   }
   if (durationMin != null) {
-    filtered = filtered.filter((s) => s.durationMs >= durationMin);
+    clauses.push('sd.duration_ms >= ?');
+    params.push(durationMin);
   }
   if (durationMax != null) {
-    filtered = filtered.filter((s) => s.durationMs <= durationMax);
+    clauses.push('sd.duration_ms <= ?');
+    params.push(durationMax);
   }
   if (addedFrom) {
-    filtered = filtered.filter((s) => s.addedAt >= addedFrom);
+    clauses.push('sd.added_at >= ?');
+    params.push(addedFrom);
   }
   if (addedTo) {
-    filtered = filtered.filter((s) => s.addedAt <= addedTo);
+    clauses.push('sd.added_at <= ?');
+    params.push(addedTo);
   }
+  // NULL naturally fails these comparisons in SQL — a song with no
+  // resolved artist popularity is excluded exactly like the old
+  // `artistPopularity !== null && ...` check, with no extra clause needed.
   if (popularityMin != null) {
-    filtered = filtered.filter((s) => s.artistPopularity !== null && s.artistPopularity >= popularityMin);
+    clauses.push('sd.artist_popularity >= ?');
+    params.push(popularityMin);
   }
   if (popularityMax != null) {
-    filtered = filtered.filter((s) => s.artistPopularity !== null && s.artistPopularity <= popularityMax);
+    clauses.push('sd.artist_popularity <= ?');
+    params.push(popularityMax);
   }
 
-  filtered = filtered.map(({ _artistNames, ...song }) => song);
-  filtered.sort((a, b) => b.addedAt.localeCompare(a.addedAt));
+  return { where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
+}
 
-  const total = filtered.length;
-  const items = filtered.slice(offset, offset + limit);
+function rowToSong(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    artists: row.artist_names ?? '',
+    album: row.album_name,
+    addedAt: row.added_at,
+    country: row.country,
+    genres: row.genres ? row.genres.split(',') : [],
+    year: row.year,
+    decade: row.decade,
+    explicit: !!row.explicit,
+    durationMs: row.duration_ms,
+    albumType: row.album_type,
+    spotifyUrl: row.spotify_url,
+    artistPopularity: row.artist_popularity,
+    artistFollowers: row.artist_followers,
+  };
+}
+
+// Filters, sorts (newest-added first), and paginates the local song
+// snapshot via real SQL against the song_details view.
+function getSongs({ limit = 50, offset = 0, ...filters } = {}) {
+  const { where, params } = buildWhere(filters);
+
+  const { count: total } = db.prepare(`SELECT COUNT(*) AS count FROM song_details sd ${where}`).get(...params);
+
+  const items = db
+    .prepare(
+      `SELECT sd.*, ${ARTIST_NAMES_SUBQUERY} AS artist_names, ${GENRES_SUBQUERY} AS genres
+       FROM song_details sd
+       ${where}
+       ORDER BY sd.added_at DESC
+       LIMIT ? OFFSET ?`
+    )
+    .all(...params, limit, offset)
+    .map(rowToSong);
 
   return { items, total, limit, offset };
 }
 
 // Distinct filter option lists + ranges, for populating the List tab's
-// dropdowns/sliders.
+// dropdowns/sliders. Genres/artists are scoped to ones that actually
+// appear on a song (via song_artists), same as the old per-song union.
 function getFilterOptions() {
-  const allSongs = songs.getAll();
-  const genreSet = new Set();
-  const yearSet = new Set();
-  const decadeSet = new Set();
-  const countrySet = new Set();
-  const albumTypeSet = new Set();
-  const artistSet = new Set();
-  let durationMin = Infinity;
-  let durationMax = -Infinity;
-  let addedMin = null;
-  let addedMax = null;
-  let popularityMin = Infinity;
-  let popularityMax = -Infinity;
+  const genres = db
+    .prepare('SELECT DISTINCT ag.genre FROM artist_genres ag JOIN song_artists sa ON sa.artist_id = ag.artist_id ORDER BY ag.genre')
+    .all()
+    .map((r) => r.genre);
+  const years = db
+    .prepare('SELECT DISTINCT year FROM song_details WHERE year IS NOT NULL ORDER BY year DESC')
+    .all()
+    .map((r) => r.year);
+  const decades = db
+    .prepare('SELECT DISTINCT decade FROM song_details WHERE decade IS NOT NULL ORDER BY decade DESC')
+    .all()
+    .map((r) => r.decade);
+  const countries = db
+    .prepare('SELECT DISTINCT country FROM song_details WHERE country IS NOT NULL ORDER BY country')
+    .all()
+    .map((r) => r.country);
+  const albumTypes = db
+    .prepare('SELECT DISTINCT album_type FROM songs WHERE album_type IS NOT NULL ORDER BY album_type')
+    .all()
+    .map((r) => r.album_type);
+  const artists = db
+    .prepare('SELECT DISTINCT a.name FROM song_artists sa JOIN artists a ON a.id = sa.artist_id ORDER BY a.name')
+    .all()
+    .map((r) => r.name);
 
-  for (const song of allSongs) {
-    for (const genre of songGenres(song)) genreSet.add(genre);
-    const year = songYear(song);
-    if (year) yearSet.add(year);
-    const decade = songDecade(song);
-    if (decade) decadeSet.add(decade);
-    const country = songCountry(song);
-    if (country) countrySet.add(country);
-    if (song.album.albumType) albumTypeSet.add(song.album.albumType);
-    for (const artist of song.artists) artistSet.add(artist.name);
-
-    if (song.durationMs < durationMin) durationMin = song.durationMs;
-    if (song.durationMs > durationMax) durationMax = song.durationMs;
-    if (!addedMin || song.addedAt < addedMin) addedMin = song.addedAt;
-    if (!addedMax || song.addedAt > addedMax) addedMax = song.addedAt;
-
-    const popularity = artists.getPopularity(song.artists[0]?.id);
-    if (popularity !== null) {
-      if (popularity < popularityMin) popularityMin = popularity;
-      if (popularity > popularityMax) popularityMax = popularity;
-    }
-  }
+  const durationRange = db.prepare('SELECT MIN(duration_ms) AS min, MAX(duration_ms) AS max FROM songs').get();
+  const addedRange = db.prepare('SELECT MIN(added_at) AS min, MAX(added_at) AS max FROM songs').get();
+  const popularityRange = db
+    .prepare('SELECT MIN(artist_popularity) AS min, MAX(artist_popularity) AS max FROM song_details WHERE artist_popularity IS NOT NULL')
+    .get();
 
   return {
-    genres: [...genreSet].sort(),
-    years: [...yearSet].sort().reverse(),
-    decades: [...decadeSet].sort().reverse(),
-    countries: [...countrySet].sort(),
-    albumTypes: [...albumTypeSet].sort(),
-    artists: [...artistSet].sort(),
-    durationRange: { min: durationMin, max: durationMax },
-    addedRange: { min: addedMin, max: addedMax },
-    popularityRange: { min: popularityMin, max: popularityMax },
+    genres,
+    years,
+    decades,
+    countries,
+    albumTypes,
+    artists,
+    durationRange,
+    addedRange,
+    popularityRange,
     playlists: playlists.getAll().map((p) => ({ id: p.id, name: p.name, trackCount: p.tracks.length })),
   };
 }
 
-// Pre-aggregated counts for the Dashboards tab's charts.
+// Pre-aggregated counts for the Dashboards tab's charts, via GROUP BY.
 function getStats() {
-  const allSongs = songs.getAll();
-  const yearCounts = new Map();
-  const decadeCounts = new Map();
-  const popularityCounts = new Map();
-  const countryCounts = new Map();
-  const likedCounts = new Map();
+  const yearCounts = db
+    .prepare('SELECT year, COUNT(*) AS count FROM song_details WHERE year IS NOT NULL GROUP BY year ORDER BY year')
+    .all();
+  const decadeCounts = db
+    .prepare('SELECT decade, COUNT(*) AS count FROM song_details WHERE decade IS NOT NULL GROUP BY decade ORDER BY decade')
+    .all();
+  const popularityCounts = db
+    .prepare(
+      `SELECT (CAST(artist_popularity / 10 AS INTEGER) * 10) || '-' || (CAST(artist_popularity / 10 AS INTEGER) * 10 + 9) AS bucket,
+              COUNT(*) AS count
+       FROM song_details
+       WHERE artist_popularity IS NOT NULL
+       GROUP BY CAST(artist_popularity / 10 AS INTEGER)
+       ORDER BY CAST(artist_popularity / 10 AS INTEGER)`
+    )
+    .all();
+  const countryCounts = db
+    .prepare('SELECT country AS code, COUNT(*) AS count FROM song_details WHERE country IS NOT NULL GROUP BY country ORDER BY count DESC')
+    .all();
+  const likedCounts = db
+    .prepare("SELECT substr(added_at, 1, 7) AS month, COUNT(*) AS count FROM songs GROUP BY month ORDER BY month")
+    .all();
 
-  for (const song of allSongs) {
-    const year = songYear(song);
-    if (year) yearCounts.set(year, (yearCounts.get(year) ?? 0) + 1);
-
-    const decade = songDecade(song);
-    if (decade) decadeCounts.set(decade, (decadeCounts.get(decade) ?? 0) + 1);
-
-    const popularity = artists.getPopularity(song.artists[0]?.id);
-    if (popularity !== null) {
-      const bucket = `${Math.floor(popularity / 10) * 10}-${Math.floor(popularity / 10) * 10 + 9}`;
-      popularityCounts.set(bucket, (popularityCounts.get(bucket) ?? 0) + 1);
-    }
-
-    const country = songCountry(song);
-    if (country) countryCounts.set(country, (countryCounts.get(country) ?? 0) + 1);
-
-    const likedMonth = song.addedAt.slice(0, 7);
-    likedCounts.set(likedMonth, (likedCounts.get(likedMonth) ?? 0) + 1);
-  }
-
-  return {
-    yearCounts: [...yearCounts.entries()]
-      .map(([year, count]) => ({ year, count }))
-      .sort((a, b) => a.year.localeCompare(b.year)),
-    decadeCounts: [...decadeCounts.entries()]
-      .map(([decade, count]) => ({ decade, count }))
-      .sort((a, b) => a.decade.localeCompare(b.decade)),
-    popularityCounts: [...popularityCounts.entries()]
-      .map(([bucket, count]) => ({ bucket, count }))
-      .sort((a, b) => Number(a.bucket.split('-')[0]) - Number(b.bucket.split('-')[0])),
-    countryCounts: [...countryCounts.entries()]
-      .map(([code, count]) => ({ code, count }))
-      .sort((a, b) => b.count - a.count),
-    likedCounts: [...likedCounts.entries()]
-      .map(([month, count]) => ({ month, count }))
-      .sort((a, b) => a.month.localeCompare(b.month)),
-  };
+  return { yearCounts, decadeCounts, popularityCounts, countryCounts, likedCounts };
 }
 
 module.exports = { getSongs, getFilterOptions, getStats };

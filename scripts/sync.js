@@ -224,32 +224,16 @@ async function syncPlaylists(accessToken, newLikedSongs) {
 // most-accurate source first
 // ---------------------------------------------------------------------------
 
-// Derives the unique artist roster from the local song snapshot — no
-// Spotify call needed, since songs already carry every artist on every
-// track. Replaces walking Spotify's saved-tracks endpoint a second time
-// just to discover artist IDs.
-function uniqueArtistsFromSongs(allSongs) {
-  const artists = new Map();
-  for (const song of allSongs) {
-    for (const artist of song.artists) {
-      artists.set(artist.id, { id: artist.id, name: artist.name });
-    }
-  }
-  return [...artists.values()];
-}
-
 // MusicBrainz batched search -> MusicBrainz per-artist fallback lookup
 // (recovers a search-index quirk) -> Wikidata batched exact-label match ->
 // Wikidata fuzzy search (recovers accent/diacritic mismatches). `artistList`
-// is the full roster (e.g. from uniqueArtistsFromSongs) — only ones never
-// seen before, or previously left unresolved, actually get queried;
-// anything already resolved is skipped, so this is cheap to re-run on
-// every sync.
+// is the full roster (artistsDb.getAll() — every artist has a row by the
+// time this runs, since db/songs.js's mergeTracks stub-creates one for
+// each artist as songs come in) — only ones previously left unresolved
+// actually get queried; anything already resolved is skipped, so this is
+// cheap to re-run on every sync.
 async function resolveCountries(artistList) {
-  const toResolve = artistList.filter((a) => {
-    const entry = artistsDb.getById(a.id);
-    return !entry || entry.country === null;
-  });
+  const toResolve = artistList.filter((a) => a.country === null);
 
   if (toResolve.length === 0) {
     console.log(`[artists] nothing to resolve (${artistList.length} artists cached)`);
@@ -289,15 +273,11 @@ async function resolveCountries(artistList) {
     await sleep(MB_REQUEST_DELAY_MS);
   }
 
-  // A batch that failed outright (e.g. a MusicBrainz 503) never populated
-  // cache entries for its artists — backfill them as unresolved so every
-  // artist in toResolve is guaranteed a cache entry before later phases
-  // assume one exists.
-  for (const artist of toResolve) {
-    if (!artistsDb.getById(artist.id)) {
-      artistsDb.upsert(artist.id, { name: artist.name, country: null });
-    }
-  }
+  // No "backfill a missing cache entry" step needed here (unlike the old
+  // JSON-era code) — every artist in toResolve already has a row by
+  // construction, since it came from artistsDb.getAll() in the first
+  // place. A failed MusicBrainz batch just leaves that row's country at
+  // whatever it already was (still null), nothing to reconcile.
 
   if (needsFallback.length > 0 && breaker.tripped) {
     console.warn(`[artists] MusicBrainz unavailable — skipping ${needsFallback.length} fallback lookups`);
@@ -435,7 +415,7 @@ function resolveIsrcFallback() {
 async function resolveArtistDetails(accessToken) {
   const toResolve = artistsDb
     .getAll()
-    .filter((a) => !('genres' in a) || !('popularity' in a))
+    .filter((a) => !a.detailsResolved)
     .map((a) => a.id);
 
   if (toResolve.length === 0) {
@@ -497,10 +477,12 @@ async function main() {
   console.log('== Syncing playlists ==');
   await syncPlaylists(accessToken, newLikedSongs);
 
-  const artistRoster = uniqueArtistsFromSongs(songsDb.getAll());
-
   console.log('== Resolving artist countries ==');
-  await resolveCountries(artistRoster);
+  // Every artist already has a row by this point — db/songs.js's
+  // mergeTracks stub-creates one for each artist as songs come in, so the
+  // full roster is just whatever's in the table (no need to separately
+  // derive it from songs, unlike the old JSON-era code).
+  await resolveCountries(artistsDb.getAll());
   resolveIsrcFallback();
 
   console.log('== Resolving artist genres/popularity ==');
