@@ -432,6 +432,24 @@ is more complete than the country rule).
 - Spotify occasionally returns a fully-blank stub for a track it has unlisted from its
   catalog (real ID, empty name/artist/album, duration 0) — filtered out during snapshot
   build (`if (!item.track.name) continue`).
+- **`OptionsSelect`'s `valueOf` prop silently never used its default, crashing every
+  select except the one (playlist) that passed a custom `valueOf` explicitly.** Root
+  cause: `valueOf` is inherited from `Object.prototype` on every plain object, so
+  `props.valueOf` is never `undefined` — `{ valueOf = (o) => o } = props` never actually
+  falls back to the default, it silently binds `valueOf` to the real, native
+  `Object.prototype.valueOf`. Calling that as a bare function (`valueOf(option)`, not
+  `option.valueOf()`) throws `TypeError: Cannot convert undefined or null to object` —
+  `Object.prototype.valueOf` does `ToObject(this)` internally, and a bare call in
+  strict-mode/ESM code has `this === undefined`. Symptom was confusing: reported as
+  "Dashboards is broken," but the crash was entirely inside the always-mounted List tab's
+  `Filters` component — clicking the Dashboards tab just forced a re-render of the whole
+  (unmemoized) `SongList` subtree too, and Preact aborts a whole render pass on a thrown
+  error, so `Dashboards` itself never even got a chance to render. Fixed by renaming the
+  prop to `keyOf` in `components/filters/OptionsSelect` and its one customized caller (the
+  playlist select in `pages/songList/Filters`). Lesson for any future prop/parameter name:
+  never name a destructured-default parameter after an `Object.prototype` member
+  (`valueOf`, `toString`, `constructor`, `hasOwnProperty`, etc.) — the default silently
+  never applies.
 
 ## Environment specifics
 

@@ -93,7 +93,7 @@ export function Filters({ filters, onChange, onReset }) {
           onChange={set('playlist')}
           allLabel="All playlists"
           options={playlists}
-          valueOf={(p) => p.id}
+          keyOf={(p) => p.id}
           labelOf={(p) => `${p.name} (${p.trackCount})`}
         />
         <button className="page-button reset-filters-button" onClick={handleReset}>
