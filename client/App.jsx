@@ -1,17 +1,38 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { EMPTY_FILTERS } from './pages/songList/Filters';
 import { SongList } from './pages/songList';
 import { Dashboards } from './pages/dashboards';
 
+const PATH_FOR_TAB = { list: '/', dashboards: '/dashboards' };
+const TAB_FOR_PATH = { '/': 'list', '/dashboards': 'dashboards' };
+
+function tabFromLocation() {
+  return TAB_FOR_PATH[window.location.pathname] ?? 'list';
+}
+
 export function App() {
-  const [tab, setTab] = useState('list');
+  const [tab, setTab] = useState(tabFromLocation);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const [dashboardsVisited, setDashboardsVisited] = useState(false);
+  const [dashboardsVisited, setDashboardsVisited] = useState(() => tabFromLocation() === 'dashboards');
 
   function switchTab(next) {
     setTab(next);
     if (next === 'dashboards') setDashboardsVisited(true);
+    const path = PATH_FOR_TAB[next];
+    if (window.location.pathname !== path) history.pushState(null, '', path);
   }
+
+  // Keeps the tab in sync with browser back/forward, since switchTab above
+  // now makes tab state a real part of the URL.
+  useEffect(() => {
+    function handlePopState() {
+      const next = tabFromLocation();
+      setTab(next);
+      if (next === 'dashboards') setDashboardsVisited(true);
+    }
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   // Called from a dashboard chart click (year bar, decade bar, popularity
   // bucket, liked-date bar, country bubble). Clicking a chart element means
