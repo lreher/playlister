@@ -104,8 +104,9 @@ layer). No further reorg work is open — any future refactor here is a fresh di
 ## Quick start
 ```
 npm install
-npm start          # serves http://127.0.0.1:3000, reads local JSON only, no Spotify calls
-npm run sync        # fetches new songs + resolves country/genre/popularity data
+npm run build        # bundles client/ into static/bundle.js (npm run watch to rebuild on save)
+npm start             # serves http://127.0.0.1:3000, reads local JSON only, no Spotify calls
+npm run sync           # fetches new songs + resolves country/genre/popularity data
 ```
 Must be logged in (via `/login` in the browser) before `npm run sync` will work — it
 needs a valid Spotify token.
@@ -123,15 +124,22 @@ this section covers what each piece *does*, not where it lives; see above for pa
   crash the whole process), but doesn't call `.listen()` itself — that's left to whoever
   calls it.
 - `routes/index.js` — every route, built on a `find-my-way` router: static file serving
-  for everything in `public/`, `/login` + `/callback` (OAuth), and the three `/api/*`
-  routes, which parse query params and call straight into `controllers/songs.js` — no
-  filter/aggregation logic lives here. **Reads only local files** — no live Spotify calls
-  except the OAuth routes and `getValidAccessToken()`'s refresh path; nothing
-  auto-triggers a backfill on startup/login (see "sync" below). One file for now (not
-  split per-domain like `routes/songs.js`) — route count didn't justify it yet; revisit
-  if it grows.
-- `routes/utils.js` — the route-layer helpers used across `routes/index.js`:
-  `getQueryParams(req)`, `sendJson(res, data)`, `serveStatic(filename, contentType)`.
+  for everything in `static/` (via `routes/static.js`), `/login` + `/callback` (OAuth),
+  and the three `/api/*` routes, which parse query params and call straight into
+  `controllers/songs.js` — no filter/aggregation logic lives here. **Reads only local
+  files** — no live Spotify calls except the OAuth routes and
+  `getValidAccessToken()`'s refresh path; nothing auto-triggers a backfill on
+  startup/login (see "sync" below). One file for now (not split per-domain like
+  `routes/songs.js`) — route count didn't justify it yet; revisit if it grows.
+- `routes/utils.js` — route-layer helpers shared across route *types*:
+  `getQueryParams(req)`, `sendJson(res, data)`.
+- `routes/static.js` — static-file serving, split out of `routes/utils.js` on purpose
+  (a `utils.js` is for genuinely cross-cutting helpers, not a dumping ground for
+  whatever got extracted — `serveStatic` is single-purpose, so it gets its own file).
+  `STATIC_FILES` (`index.html`, `style.css`, `world.geo.json`, `bundle.js`) + a MIME-type
+  map keyed by extension + `registerStaticRoutes(router)`, which loops the list
+  registering one route per file (`index.html` → `/`, everything else → `/<filename>`).
+  Serves out of `static/`, not `public/` (see "Client architecture" below).
 - `controllers/songs.js` — all the actual `/api/songs` (filter+sort+paginate),
   `/api/filters` (distinct option lists + ranges), and `/api/stats` (dashboard
   aggregates) logic, as plain functions `getSongs()`/`getFilterOptions()`/`getStats()`
@@ -170,39 +178,83 @@ this section covers what each piece *does*, not where it lives; see above for pa
   `main()` sequencing all of them: sync liked songs → sync playlists (adds any
   playlist-only tracks) → derive artist roster from local songs → resolve countries →
   ISRC fallback → resolve genres/popularity/followers.
-- `public/` — vanilla DOM, no build step, no bundler — plain `<script src>` tags sharing
-  one global scope (see "Frontend script split" below for load order and why that's
-  safe). `index.html`, `style.css` (dark, Spotify-green accent, Inter font via Google
-  Fonts), `countryCoords.js` (static ISO-code → [lon,lat] lookup, ~244 entries),
-  `world.geo.json` (world country boundaries, ECharts' own test-data file, ~1MB).
+- `static/` — served, built output + static assets: `index.html` (hand-authored — just a
+  `<div id="root">` + Google Fonts/ECharts CDN tags + `bundle.js`), `style.css`
+  (hand-authored, unchanged from the vanilla era — dark, Spotify-green accent, Inter font),
+  `world.geo.json` (world country boundaries, ECharts' own test-data file, ~1MB),
+  `bundle.js` (esbuild output, **gitignored** — a build artifact, not source).
+- `client/` — the SPA source. See "Client architecture" below.
 
-## Frontend script split
+## Client architecture (Preact + esbuild — replaced the vanilla `public/` setup)
 
-`app.js` grew to ~490 lines mixing four concerns before being split (all still plain
-`<script>` tags, no modules/bundler):
+The old `public/*.js` plain-`<script>` setup (six files sharing one global scope,
+order-dependent) is **gone** — full SPA rewrite. Decisions made getting here, in order:
 
-- `public/rangeSlider.js` — `createDualSlider()`, the hand-built dual-handle slider
-  widget. No dependencies on anything else.
-- `public/filters.js` — filter state variables, `filterControls` (registry of the
-  built dropdown/slider DOM elements, read by `tabs.js`), formatting helpers
-  (`countryLabel`, `formatDuration`, `formatDateShort`), `resetFilterState()`,
-  `loadFilters()`.
-- `public/songTable.js` — `LIMIT`, `offset`, `loadPage()`, `render()`.
-- `public/tabs.js` — `switchTab()`, `applyDashboardFilter()` (the bridge a dashboard
-  chart click uses to jump to List pre-filtered), and the tab-button click wiring.
-- `public/app.js` — now just the two-line bootstrap (`loadFilters(); loadPage();`).
-- `public/dashboards.js` — unchanged, still depends on `countryLabel` (filters.js) and
-  `window.applyDashboardFilter` (tabs.js) being loaded first.
+- **Framework**: Preact (~4kb, React-compatible hooks/component API) — "lightest possible
+  React." Considered Svelte/Vue/React first; Preact won once a build step was accepted.
+- **Build tool**: esbuild, not Vite — explicitly rejected Vite for being more machinery
+  than needed here. No dedicated build script either — the whole build is one esbuild CLI
+  invocation as an npm script (`jsx: automatic`, `jsx-import-source: preact`, no plugin
+  needed for JSX).
+- **One `package.json`** — no separate `client/package.json`. It's one app; `esbuild`/
+  `preact` live alongside the backend's `dotenv`/`find-my-way`.
+- **Dev workflow**: no second dev server/proxy. `npm run watch` rebuilds `static/bundle.js`
+  on save; the existing Node backend serves it like any other static file. Manual browser
+  refresh after a save, not live-reload — a deliberate trade-off (esbuild has no built-in
+  HMR) accepted for this app's size.
+- npm scripts: `npm start` (run the app), `npm run build` (one-shot minified bundle),
+  `npm run watch` (rebuild on save).
 
-**Load order matters and is intentional**: `index.html` loads them
-`rangeSlider.js → filters.js → songTable.js → tabs.js → countryCoords.js → app.js →
-dashboards.js`. Classic (non-module) `<script>` tags on one page share a single global
-scope, so a `let`/`function` declared in one file is visible in a later one — but only
-functions bodies are late-bound (safe regardless of order, since they're not evaluated
-until actually *called*). `app.js`'s bootstrap calls `loadFilters()`/`loadPage()`
-immediately at the top level, so it's the one file that genuinely must load last among
-the List-tab scripts. If you add a new cross-file top-level (not-inside-a-function)
-reference, check it against this ordering — that's the one way this pattern can break.
+**Directory shape** — `components/` holds only genuinely reusable primitives;
+`pages/` holds page-specific composition; nothing in `components/` knows about songs,
+artists, or "filters" as a domain:
+
+```
+client/
+  App.jsx          # shell: tab state (list/dashboards), dispatches to pages/
+  api.js            # fetch wrappers: getFilters(), getSongs(), getStats(), getWorldGeoJson()
+  index.jsx          # entry: render(<App/>, #root)
+  utils/format.js      # countryLabel, formatDuration, formatDateShort
+  themes/
+    globalTheme.js      # base palette, kept in sync by hand with style.css's :root
+    chartTheme.js         # globalTheme + chart-only `emphasis` + baseChartOption()
+  components/
+    charts/               # generic echarts primitives, no domain knowledge
+      BarChart/, WorldMap/
+    filters/                # generic input primitives, no domain knowledge
+      OptionsSelect/ (dropdown), OptionsSearch/ (datalist-backed free-text search,
+      constrained to known values), RangeSlider/ (dual-handle native range inputs)
+  pages/
+    dashboards/               # everything dashboards-specific lives here
+      index.jsx                 # fetches /api/stats once, renders the 5 charts below
+      YearBarChart/, DecadeBarChart/, LikedBarChart/, PopularityBarChart/  # each: shapes
+        its slice of stats into BarChart's categories/values + its onClickCategory
+      CountryMap/                # shapes countryCounts into WorldMap's points via
+        countryCoords.js (ISO code → [lon,lat], colocated here — CountryMap-only data,
+        not a generic chart concern, so it doesn't live in components/charts/)
+    songList/
+      index.jsx                  # renders Filters + SongTable
+      Filters/                    # filter row: fetches /api/filters, owns filter-state
+        shape (EMPTY_FILTERS), composes the components/filters/ primitives
+      SongTable/                   # paginated table, re-fetches on filters/offset change
+```
+
+**Patterns worth knowing**:
+- **Controlled vs. uncontrolled inputs**: dropdowns are controlled (`value={filters.x}`)
+  because a dashboard chart click can set them from outside — Preact just re-renders them
+  to match, no manual DOM sync needed (the vanilla version needed exactly that hack).
+  `OptionsSearch` and `RangeSlider` are deliberately uncontrolled (refs) — forcing a value
+  prop onto free-typing text or a mid-drag range input would fight the native element.
+  They reset via a `key={resetToken}` remount trick on "Reset filters" instead.
+- **Dashboards mount lazily, once**: `App.jsx` only renders `<Dashboards/>` after the tab's
+  been visited the first time, and never unmounts it after — matches the old lazy-load-
+  once-then-cache behavior, avoids re-fetching `/api/stats` or re-initializing echarts
+  instances on every tab switch.
+- **One real theme default, not five accidental copies**: chart color used to be a
+  `COLOR`/`EMPHASIS_COLOR` const duplicated identically in all five dashboard files —
+  looked configurable but wasn't really, since nothing ever diverged. Now `BarChart`/
+  `WorldMap` default `color`/`emphasisColor` from `themes/chartTheme.js`; a dashboard file
+  only declares its own override when it actually wants to differ from the shared theme.
 
 ## Dashboards tab
 
@@ -215,8 +267,9 @@ shows whole-library stats.
 - Backend: `GET /api/stats` (`index.js`) — pre-aggregates `songs.json` into
   `yearCounts`, `popularityCounts` (bucketed by 10s), `countryCounts`. Browser never has
   to pull all ~5000 song rows just to draw charts.
-- Three charts (`public/dashboards.js`, lazy-loaded + cached on first tab switch):
-  year histogram, popularity histogram, and a world map with a bubble per country
+- Five charts (`client/pages/dashboards/`, lazy-loaded + cached on first tab switch — see
+  "Client architecture" above): year/decade/liked-date/popularity histograms via the
+  shared `BarChart` primitive, and a world map with a bubble per country via `WorldMap`
   (`scatter` series on `coordinateSystem: 'geo'`, positioned via `countryCoords.js`,
   radius **sqrt-scaled** to song count so bubble *area* — not radius — is proportional,
   which is what the eye actually perceives correctly).
@@ -397,3 +450,12 @@ is more complete than the country rule).
   accept as the practical ceiling, manual override UI, or manual per-artist web research
   (not automatable cheaply).
 - The stray `artist-countries copy.json` file's origin is still unexplained.
+
+## Roadmap (declared, not yet started unless noted)
+
+- **Client code cleanup** — **done**. Full Preact + esbuild SPA rewrite, see "Client
+  architecture" above.
+- **Move to SQLite** — flat JSON files (`data/songs.json`, `artists.json`,
+  `playlists.json`) are the current datastore; the plan is to eventually migrate to
+  SQLite. Not started, no schema/migration design done yet — a fresh discussion when
+  picked up.

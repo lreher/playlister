@@ -976,3 +976,5 @@ const COUNTRY_COORDS = {
     28.298
   ]
 };
+
+export { COUNTRY_COORDS };

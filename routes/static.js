@@ -8,23 +8,12 @@ const MIME_TYPES = {
   '.json': 'application/json',
 };
 
-const STATIC_FILES = [
-  'index.html',
-  'app.js',
-  'rangeSlider.js',
-  'filters.js',
-  'songTable.js',
-  'tabs.js',
-  'dashboards.js',
-  'countryCoords.js',
-  'style.css',
-  'world.geo.json',
-];
+const STATIC_FILES = ['index.html', 'style.css', 'world.geo.json', 'bundle.js'];
 
 function serveStatic(filename) {
   const contentType = MIME_TYPES[path.extname(filename)] || 'application/octet-stream';
   return (req, res) => {
-    const body = fs.readFileSync(path.join(__dirname, '..', 'public', filename));
+    const body = fs.readFileSync(path.join(__dirname, '..', 'static', filename));
     res.writeHead(200, { 'Content-Type': contentType });
     res.end(body);
   };

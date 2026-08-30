@@ -5,6 +5,8 @@
   "scripts": {
     "start": "node index.js",
     "sync": "node scripts/sync.js",
+    "build": "esbuild client/index.jsx --bundle --outfile=static/bundle.js --jsx=automatic --jsx-import-source=preact --minify",
+    "watch": "esbuild client/index.jsx --bundle --outfile=static/bundle.js --jsx=automatic --jsx-import-source=preact --watch",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
@@ -12,6 +14,8 @@
   "description": "",
   "dependencies": {
     "dotenv": "^17.4.2",
-    "find-my-way": "^9.9.0"
+    "esbuild": "^0.28.2",
+    "find-my-way": "^9.9.0",
+    "preact": "^10.29.8"
   }
 }
