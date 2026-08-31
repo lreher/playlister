@@ -2,9 +2,10 @@ import { useEffect, useState } from 'preact/hooks';
 import { EMPTY_FILTERS } from './pages/songList/Filters';
 import { SongList } from './pages/songList';
 import { Dashboards } from './pages/dashboards';
+import { Events } from './pages/events';
 
-const PATH_FOR_TAB = { list: '/', dashboards: '/dashboards' };
-const TAB_FOR_PATH = { '/': 'list', '/dashboards': 'dashboards' };
+const PATH_FOR_TAB = { list: '/', dashboards: '/dashboards', events: '/events' };
+const TAB_FOR_PATH = { '/': 'list', '/dashboards': 'dashboards', '/events': 'events' };
 
 function tabFromLocation() {
   return TAB_FOR_PATH[window.location.pathname] ?? 'list';
@@ -56,6 +57,9 @@ export function App() {
         >
           Dashboards
         </button>
+        <button className={`tab-button ${tab === 'events' ? 'active' : ''}`} onClick={() => switchTab('events')}>
+          Events
+        </button>
       </div>
 
       <div style={{ display: tab === 'list' ? '' : 'none' }}>
@@ -64,6 +68,10 @@ export function App() {
 
       <div style={{ display: tab === 'dashboards' ? '' : 'none' }}>
         {dashboardsVisited && <Dashboards onFilterClick={applyDashboardFilter} />}
+      </div>
+
+      <div style={{ display: tab === 'events' ? '' : 'none' }}>
+        <Events />
       </div>
     </>
   );

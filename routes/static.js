@@ -14,7 +14,7 @@ const STATIC_FILES = ['world.geo.json', 'bundle.js', 'bundle.css'];
 // these serves the same index.html shell; the client reads the URL itself
 // (App.jsx) to decide which tab to show. Needed so a direct load/refresh of
 // e.g. /dashboards works, not just clicking there from within the app.
-const APP_ROUTES = ['/', '/dashboards'];
+const APP_ROUTES = ['/', '/dashboards', '/events'];
 
 function serveStatic(filename) {
   const contentType = MIME_TYPES[path.extname(filename)] || 'application/octet-stream';

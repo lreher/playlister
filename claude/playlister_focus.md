@@ -132,9 +132,6 @@ needs a valid Spotify token.
 
 ## Architecture
 
-Current file layout is documented in full in the "Architecture reorg" section above —
-this section covers what each piece *does*, not where it lives; see above for paths.
-
 - `index.js` (top-level) — starts the server. Just `dotenv.config()` + `createServer()`
   from `server/` + `.listen()`. Deliberately this thin — Lucas's call, likes the pattern
   even though the file otherwise feels redundant.
@@ -143,8 +140,9 @@ this section covers what each piece *does*, not where it lives; see above for pa
   crash the whole process), but doesn't call `.listen()` itself — that's left to whoever
   calls it.
 - `routes/index.js` — every route, built on a `find-my-way` router: static file serving
-  for everything in `static/` (via `routes/static.js`), `/login` + `/callback` (OAuth),
-  and the three `/api/*` routes, which parse query params and call straight into
+  for everything in `static/` (via `routes/static.js`), `/login` + `/callback` (OAuth,
+  **only registered when `ENABLE_LOGIN=true`** — see "Deployment" below for why), and
+  the three `/api/*` routes, which parse query params and call straight into
   `controllers/songs.js` — no filter/aggregation logic lives here. **Reads only local
   files** — no live Spotify calls except the OAuth routes and
   `getValidAccessToken()`'s refresh path; nothing auto-triggers a backfill on
@@ -409,7 +407,7 @@ Spotify has no artist-location field at all — this entire pipeline is external
    stripped, not just the top-ranked hit (top hit can be an unrelated concept). Found QIDs
    are then batch-looked-up for country by ID (`VALUES ?item { wd:Q1 wd:Q2 ... }` —
    ID-based matching sidesteps the accent problem entirely).
-5. **ISRC fallback** (`lib/isrcCountry.js`) — first 2 letters of a track's ISRC are a
+5. **ISRC fallback** (`utils/isrcCountry.js`) — first 2 letters of a track's ISRC are a
    country-of-registration code. Applied **per-song**, not per-artist (different songs by
    the same artist can have different ISRCs). Needs a `UK`→`GB` remap (ISRC-specific
    quirk) and validated via `Intl.DisplayNames` — note that `.of()` does **not** throw for
@@ -485,7 +483,126 @@ is more complete than the country rule).
   `0.0.0.0` bind fix (see above) plus using `127.0.0.1` instead of `localhost` for the
   Spotify redirect URI.
 - `.env` holds `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`
-  (`http://127.0.0.1:3000/callback`), `PORT`. Currently pointed at the **old** app.
+  (`http://127.0.0.1:3000/callback`), `PORT`, `ENABLE_LOGIN` (`true` locally — see
+  "Deployment" below). Currently pointed at the **old** app.
+
+## Deployment (Aug 2026 — in progress)
+
+Decided, not yet built (except where marked done): a **DigitalOcean droplet** (real
+persistent disk — the whole point of the SQLite migration was a real file on disk, which
+rules out most serverless/PaaS platforms that wipe local disk on every redeploy) exposed
+via **Cloudflare Tunnel** (free; no inbound port opened on the droplet at all, automatic
+TLS, hides the origin IP). Cloudflare itself was considered and rejected *as the host* —
+their compute products (Workers, Pages Functions) are serverless/edge, no persistent
+local filesystem, wrong shape for a long-running `http.createServer` process writing to a
+local SQLite file. It's still useful, just for the tunnel/TLS layer, not compute.
+
+**Explicit call: no auth for v1.** Lucas doesn't care about the song library/dashboard
+data itself being public — anyone with the URL can view it. The one thing that *does*
+need guarding is anything that could **mutate** state with no per-visitor session to
+scope it to (this app has exactly one global dataset, one global stored token — no
+multi-tenancy at all).
+
+- **Done**: `/login`/`/callback` gated behind `ENABLE_LOGIN` (unset/false by default,
+  `routes/index.js`) — without it, those two routes aren't registered at all, not
+  hidden/403'd. Reasoning: `/callback` calls `exchangeCodeForTokens()`, which overwrites
+  the single stored token row unconditionally; with no per-visitor session, anyone who
+  visited `/login` and completed their *own* Spotify consent would silently clobber the
+  real stored token — no data leak (nothing of Lucas's gets exposed), but a real
+  "stranger can break my own sync" problem. Audited the rest of the surface at the same
+  time: the three `/api/*` routes only ever read the local DB (no live Spotify call
+  involved), so nothing else needed gating. Verified both states live: unset → `/login`
+  and `/callback` both 404; `ENABLE_LOGIN=true` → `/login` correctly 302s to Spotify's
+  authorize URL. `.env.example` and the real `.env` both updated
+  (`ENABLE_LOGIN=true` locally, since `/login` is still needed for day-to-day local dev).
+- **Done**: droplet provisioned by Lucas (DigitalOcean, Ubuntu 24.04 LTS,
+  `159.223.125.80` — this IP will change if the droplet's ever recreated, don't treat it
+  as permanent). SSH access confirmed key-based only — `PasswordAuthentication no` is set
+  twice over via DigitalOcean's own cloud-init config, so no brute-forceable password
+  auth despite `PermitRootLogin yes` in the base sshd_config. Node 22.23.2 installed via
+  NodeSource (Ubuntu 24.04's own apt repo lags well behind what `node:sqlite` needs).
+  Repo cloned (it's public on GitHub, so a plain `git clone` needs no deploy key/token at
+  all), `npm install` + `npm run build` both run clean on the droplet. The **already-
+  fully-synced** `data/playlister.db` copied up via `scp` rather than re-running the sync
+  pipeline (real API-call cost already paid once locally — no reason to pay it twice).
+  `.env` written directly via `scp` of a local temp file (not typed inline over SSH, to
+  keep secrets out of remote shell history) — same Spotify credentials as local,
+  `SPOTIFY_REDIRECT_URI` now `https://playlister.lucasreher.com/callback` (updated once
+  the tunnel gave a real domain — see below), `ENABLE_LOGIN` deliberately absent. Running
+  as a `systemd` service (`playlister.service`
+  — `/etc/systemd/system/playlister.service`, `WorkingDirectory=/root/playlister`,
+  `ExecStart=/usr/bin/node index.js`, `Restart=on-failure`), enabled so it survives a
+  reboot. Verified against the same baseline as every prior change on this project
+  (6214 songs, 93 countries, 468 genres, 48 playlists, 4497 artists) both directly via
+  SSH+curl and — critically — from an entirely separate machine hitting the droplet's
+  public IP, not just its loopback (see the firewall finding right below for why that
+  distinction mattered).
+- **Real gap caught by Lucas, not found proactively**: right after getting the app
+  running, it was described as "only reachable on the droplet's own network" — an
+  assumption, never actually tested. Lucas pushed back ("this is super unsafe no?") and
+  it turned out to be wrong: `ufw` was inactive, so port 3000 was open to the entire
+  public internet with no TLS, alongside SSH. Confirmed by literally `curl`ing the
+  droplet's public IP from a separate machine (not `curl 127.0.0.1` over the same SSH
+  session that proves nothing about external reachability) — got a real `200`. Fixed:
+  `ufw allow OpenSSH` + `ufw default deny incoming` + `ufw enable`, then re-verified from
+  outside that port 3000 is now unreachable while SSH and the systemd service both still
+  work. This is also the reason port 3000 was never opened for Cloudflare Tunnel either —
+  the tunnel daemon connects *outbound* from the droplet to Cloudflare's edge, so no
+  inbound firewall rule for the app is ever needed once it's set up; only the tunnel path
+  will be able to reach it.
+- **Done — live**: `playlister.lucasreher.com` (Lucas's existing domain, already on
+  Cloudflare). Originally asked for as a *path* — `lucasreher.com/playlister/*` — but that
+  would have needed real code changes throughout the app (every asset reference, API
+  fetch, and the client-side router are all root-absolute, e.g. `/bundle.js`, `/api/songs`,
+  with no path-prefix concept anywhere), since nothing currently serves the domain root.
+  A subdomain needed zero app changes — just its own independent tunnel hostname — so
+  that's what got built instead, once the tradeoff was on the table.
+  `cloudflared` installed via Cloudflare's own apt repo; `cloudflared tunnel login`
+  authenticated via a browser URL Lucas opened himself (the command has to run somewhere
+  with terminal output to print that URL — backgrounding it silently the first time hid
+  the URL entirely and wasted a round-trip — fixed by using the harness's real
+  background-command mode instead, which surfaces partial output on demand). Named
+  tunnel `playlister`
+  created, `/root/.cloudflared/config.yml` (→ `/etc/cloudflared/config.yml` once
+  `cloudflared service install` ran) routes `playlister.lucasreher.com` →
+  `http://localhost:3000` with a catch-all 404 for anything else, DNS CNAME added via
+  `cloudflared tunnel route dns`, running as its own `systemd` service (`cloudflared`,
+  enabled). Verified from outside: the real public URL serves the app over HTTPS with the
+  same baseline numbers as ever, `/login` still correctly 404s through the tunnel, and
+  direct `:3000` access is still blocked — the tunnel is genuinely the only path in.
+  `SPOTIFY_REDIRECT_URI` updated to `https://playlister.lucasreher.com/callback` in the
+  droplet's `.env`.
+- **Not started**: adding that same redirect URI in the Spotify Developer Dashboard
+  (needed before `ENABLE_LOGIN` is ever flipped on for real), and a one-time
+  `ENABLE_LOGIN=true` flip on the droplet to (re-)authenticate if the copied token's gone
+  stale by then — should be rare after that, since `getValidAccessToken()`'s existing
+  auto-refresh keeps future unattended `npm run sync` runs working without it.
+
+### Publishing changes
+
+`npm run deploy` (local) — the only piece that actually SSHes in; everything else runs
+remotely. Chosen over two alternatives on purpose:
+- **Not** a second `git remote` + post-receive hook (`git push production main`) —
+  that pattern needs a bare repo living only on the droplet, which can silently drift
+  from what's on GitHub if you ever push to one and forget the other. GitHub's `main`
+  stays the unambiguous single source of truth this way instead.
+- **Not** GitHub Actions auto-deploy-on-push — more machinery (a CI service, secrets
+  management) than this project has reached for anywhere else for an equivalent
+  convenience (same reasoning as `node:sqlite` over `better-sqlite3`, or DigitalOcean
+  over a PaaS).
+
+Two pieces:
+- `scripts/deploy.sh` — git-tracked, so it exists locally too, but only ever *runs* on
+  the droplet: `git pull && npm install && npm run build && systemctl restart playlister`.
+- `~/.ssh/config` (local machine only, not git-tracked) has a `playlister-prod` host
+  alias for `159.223.125.80` — keeps the droplet's IP out of the committed repo
+  entirely (it's also not permanent, see above), and out of `package.json`'s `deploy`
+  script, which just runs `ssh playlister-prod 'bash playlister/scripts/deploy.sh'`.
+
+One-time bootstrap needed the first time this existed: `scripts/deploy.sh` has to
+already be on the droplet before `npm run deploy` can invoke it (it's what `git pull`s
+itself into place on every run after that) — so the very first rollout of this mechanism
+needed one manual `git pull` on the droplet.
 
 ## Open items / natural next steps
 
