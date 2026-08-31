@@ -252,6 +252,35 @@ h1 {
   opacity: 0.6;
 }
 
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 1.5rem 0;
+}
+
+.pagination-page {
+  padding: 0.3rem 0.75rem;
+  min-width: 2.25rem;
+}
+
+/* Higher specificity than .page-button:disabled on purpose — the current
+   page is disabled (clicking it would be a no-op) but should read as
+   "selected," not "unavailable." */
+.pagination-page.active:disabled {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #000000;
+  opacity: 1;
+}
+
+.pagination-ellipsis {
+  color: var(--text-muted);
+  padding: 0 0.25rem;
+}
+
 .reset-filters-button {
   margin-left: auto;
   border-color: var(--border);

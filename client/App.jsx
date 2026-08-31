@@ -7,9 +7,7 @@ import { Events } from './pages/events';
 const PATH_FOR_TAB = { list: '/', dashboards: '/dashboards', events: '/events' };
 const TAB_FOR_PATH = { '/': 'list', '/dashboards': 'dashboards', '/events': 'events' };
 
-function tabFromLocation() {
-  return TAB_FOR_PATH[window.location.pathname] ?? 'list';
-}
+const tabFromLocation = () => TAB_FOR_PATH[window.location.pathname] ?? 'list';
 
 export function App() {
   const [tab, setTab] = useState(tabFromLocation);

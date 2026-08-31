@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { getSongs } from '../../../api';
 import { countryLabel } from '../../../utils/format';
+import { Pagination } from '../../../components/Pagination';
 
 const LIMIT = 50;
 const COLUMNS = ['Name', 'Artist(s)', 'Album', 'Year', 'Added', 'Country', 'Genres'];
@@ -96,6 +97,7 @@ export function SongTable({ filters }) {
           </tr>
         ))}
       </table>
+      <Pagination offset={page.offset} limit={LIMIT} total={page.total} onOffsetChange={setOffset} />
     </>
   );
 }
