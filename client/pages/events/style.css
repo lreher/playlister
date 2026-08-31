@@ -1,0 +1,30 @@
+/* Smooth, slow wander between bright and dim — same brightness range as
+   before (0.7-1.0), but unevenly-spaced keyframe stops instead of tightly
+   clustered ones, so each transition is gradual rather than a snap. */
+@keyframes tbd-glow {
+  0% {
+    filter: brightness(1);
+  }
+  13% {
+    filter: brightness(0.78);
+  }
+  31% {
+    filter: brightness(0.95);
+  }
+  44% {
+    filter: brightness(0.7);
+  }
+  63% {
+    filter: brightness(1);
+  }
+  79% {
+    filter: brightness(0.82);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+
+.tbd-glow {
+  animation: tbd-glow 9s ease-in-out infinite;
+}
