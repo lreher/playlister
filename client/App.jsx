@@ -216,10 +216,12 @@ export function App() {
     setDeleting(true);
     wipeDatabase()
       .then(() => {
-        // The server process is about to restart (systemd) — an immediate
-        // reload could land mid-restart and show a connection error
-        // instead of the fresh login screen. A short delay gives it time.
-        setTimeout(() => window.location.reload(), 2000);
+        // The server process exits and systemd (RestartSec=5 — verified in
+        // the actual unit file, not assumed) waits a full 5s before
+        // bringing it back up. Reloading sooner than that lands in the
+        // dead window and shows a connection error instead of the fresh
+        // login screen.
+        setTimeout(() => window.location.reload(), 7000);
       })
       .catch((err) => {
         setDeleting(false);
