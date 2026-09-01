@@ -2,11 +2,12 @@
 // project's scale (Spotify Development Mode's 25-user cap, one systemd-
 // managed process) a real job queue is more machinery than this warrants.
 //
-// TWO separate queues, not one: fast sync (a user's own songs/playlists —
-// bounded by Spotify pagination speed alone) and enrichment (global artist
-// country/genre resolution — deliberately rate-limited against MusicBrainz/
-// Wikidata, can run for minutes against a brand-new user's never-before-
-// seen artists). If these shared one queue, a second user's login would
+// TWO separate queues, not one: fast sync (a user's own songs/playlists,
+// plus genres/popularity — all bounded to at most ~a minute or so) and
+// enrichment (global artist *country* resolution — deliberately rate-
+// limited against MusicBrainz/Wikidata, can run for hours against a
+// brand-new user's never-before-seen artists). If these shared one queue,
+// a second user's login would
 // get stuck waiting behind the first user's slow enrichment pass — the
 // whole point of splitting them is that logging in only ever waits on the
 // fast queue. Each queue still serializes its own kind of work across
@@ -26,9 +27,9 @@ function enqueueSync(userId) {
       console.log(`[sync] now running for user ${userId}`);
       return sync.runFastSync(userId);
     })
-    .then((accessToken) => {
+    .then(() => {
       usersDb.setSyncStatus(userId, 'done');
-      enqueueEnrichment(accessToken);
+      enqueueEnrichment();
     })
     .catch((err) => {
       // Previously silent — a fast-sync crash only ever showed up in the
@@ -48,9 +49,9 @@ function enqueueSync(userId) {
 // there's nothing left to report a failure *to* — the next user's login
 // (or a manual `npm run sync <userId>`) naturally retries whatever's still
 // unresolved.
-function enqueueEnrichment(accessToken) {
+function enqueueEnrichment() {
   enrichQueue = enrichQueue
-    .then(() => sync.runEnrichment(accessToken))
+    .then(() => sync.runEnrichment())
     .catch((err) => console.error('[enrichment] failed:', err.message));
 }
 

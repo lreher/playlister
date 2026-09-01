@@ -13,6 +13,12 @@ const tabFromLocation = () => TAB_FOR_PATH[window.location.pathname] ?? 'list';
 const SYNC_POLL_MS = 2500;
 const ENRICHMENT_POLL_MS = 10000;
 
+const SYNC_PHASE_LABELS = {
+  songs: 'Fetching your songs',
+  playlists: 'Fetching your playlists',
+  details: 'Resolving genres and popularity',
+};
+
 export function App() {
   const [tab, setTab] = useState(tabFromLocation);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
@@ -152,7 +158,7 @@ export function App() {
         {syncProgress && (
           <div className="sync-progress">
             <p className="sync-progress-label">
-              {syncProgress.phase === 'songs' ? 'Fetching your songs' : 'Fetching your playlists'}
+              {SYNC_PHASE_LABELS[syncProgress.phase] ?? 'Working…'}
               {pct !== null && ` — ${syncProgress.current}/${syncProgress.total} (${pct}%)`}
             </p>
             {pct !== null && (

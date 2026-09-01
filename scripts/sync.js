@@ -442,8 +442,11 @@ function resolveIsrcFallback() {
 // One-time pass, batched 50 artist IDs/request via Spotify's own artist
 // endpoint. Only fetches artists missing any of these fields, so re-running
 // (e.g. after adding a new field here later) only costs requests for
-// artists that actually need it.
-async function resolveArtistDetails(accessToken) {
+// artists that actually need it. `userId` is optional (only the blocking
+// call from runFastSync needs to report progress; the manual CLI path
+// doesn't) — when given, reports into the same sync_progress_* columns
+// syncSongs/syncPlaylists already use.
+async function resolveArtistDetails(accessToken, userId) {
   const toResolve = artistsDb
     .getAll()
     .filter((a) => !a.detailsResolved)
@@ -456,6 +459,7 @@ async function resolveArtistDetails(accessToken) {
 
   console.log(`[artists] resolving details for ${toResolve.length} artists`);
   let resolved = 0;
+  if (userId) usersDb.setSyncProgress(userId, 'details', 0, toResolve.length);
 
   for (let i = 0; i < toResolve.length; i += GENRE_BATCH_SIZE) {
     const batch = toResolve.slice(i, i + GENRE_BATCH_SIZE);
@@ -480,6 +484,7 @@ async function resolveArtistDetails(accessToken) {
         }
       }
       resolved += batch.length;
+      if (userId) usersDb.setSyncProgress(userId, 'details', resolved, toResolve.length);
       console.log(`[artists] resolved ${resolved}/${toResolve.length} artists`);
     } catch (err) {
       console.error(`[artists] batch failed: ${err.message}`);
@@ -497,13 +502,16 @@ async function resolveArtistDetails(accessToken) {
 
 // Split from enrichment on purpose: this half is bounded by Spotify
 // pagination speed alone (no artificial delay anywhere in it), while
-// resolveCountries/resolveArtistDetails below are deliberately
-// rate-limited against external services outside our control (MusicBrainz,
-// Wikidata) and can run for minutes against a brand-new user's never-
-// before-seen artists. sources/syncQueue.js flips a user's sync_status to
-// 'done' — unblocking the UI — right after this returns, without waiting
-// on enrichment at all. Returns the access token so the caller can hand it
-// to runEnrichment without a second token lookup.
+// resolveCountries below is deliberately rate-limited against an external
+// service outside our control (MusicBrainz/Wikidata) and can run for hours
+// against a brand-new user's never-before-seen artists — that one stays in
+// the background (runEnrichment). Genres/popularity (resolveArtistDetails)
+// used to live there too, but Lucas wanted it to actually be *done* by the
+// time the app becomes usable rather than filling in gradually afterward —
+// reasonable, since Spotify's own batch endpoint resolves thousands of
+// artists in well under a minute, a small addition to the wait. Returns
+// the access token so the caller can hand it to runEnrichment without a
+// second token lookup.
 async function runFastSync(userId) {
   const accessToken = await spotify.getValidAccessToken(userId);
   if (!accessToken) {
@@ -520,26 +528,16 @@ async function runFastSync(userId) {
   // deferring it to the slow phase.
   resolveIsrcFallback();
 
+  console.log('== Resolving artist genres/popularity ==');
+  await resolveArtistDetails(accessToken, userId);
+
   return accessToken;
 }
 
-// The slow half — global artist enrichment, not scoped to any one user's
-// login. `accessToken` just needs to be *some* currently-valid token (the
-// genre/popularity/batch-endpoint access this depends on is gated by which
-// Spotify app is used, not which user's token calls it — see
-// playlister_focus.md's Spotify API findings), so the caller's own token
-// from runFastSync is reused rather than looking up another one.
-async function runEnrichment(accessToken) {
-  // Genres/popularity first, deliberately — Spotify's own batch endpoint
-  // resolves thousands of artists in well under a minute, while
-  // resolveCountries below is rate-limited against MusicBrainz/Wikidata and
-  // can run for hours on a cold cache. Countries used to run first, which
-  // meant genres/popularity sat at zero the whole time countries were
-  // still working through a large backlog, even though they're completely
-  // independent and could have shown up almost immediately.
-  console.log('== Resolving artist genres/popularity ==');
-  await resolveArtistDetails(accessToken);
-
+// The slow half — global artist country resolution, not scoped to any one
+// user's login. No access token needed at all — MusicBrainz/Wikidata don't
+// use Spotify auth.
+async function runEnrichment() {
   console.log('== Resolving artist countries ==');
   // Every artist already has a row by this point — db/songs.js's
   // mergeTracks stub-creates one for each artist as songs come in, so the
@@ -554,8 +552,8 @@ async function runEnrichment(accessToken) {
 // server-triggered path (sources/syncQueue.js) calls runFastSync and
 // runEnrichment separately instead, on two independent queues.
 async function runFullSync(userId) {
-  const accessToken = await runFastSync(userId);
-  await runEnrichment(accessToken);
+  await runFastSync(userId);
+  await runEnrichment();
   console.log('== Sync complete ==');
 }
 
