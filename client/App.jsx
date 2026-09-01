@@ -20,6 +20,20 @@ const SYNC_PHASE_LABELS = {
   details: 'Resolving genres and popularity',
 };
 
+// The country-resolution cascade (scripts/sync.js's resolveCountries) —
+// cheapest/most-accurate source first. Some artists never resolve through
+// any of these (genuinely obscure/independent, absent from every free
+// structured source tried — see playlister_focus.md), so the overall
+// resolved/total count alone plateaus below 100% forever. Showing which
+// step is actively running (and its own checked/total) is what makes
+// continued progress visible instead of a stalled-looking percentage.
+const ENRICHMENT_STEP_LABELS = {
+  'musicbrainz-search': 'MusicBrainz Search',
+  'musicbrainz-fallback': 'MusicBrainz Fallback Lookup',
+  'wikidata-exact': 'Wikidata Match',
+  'wikidata-fuzzy': 'Wikidata Fuzzy Search',
+};
+
 export function App() {
   const [tab, setTab] = useState(tabFromLocation);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
@@ -196,14 +210,28 @@ export function App() {
 
   function renderEnrichmentStatus() {
     if (!enrichmentStatus) return null;
-    const { countries, details } = enrichmentStatus;
+    const { countries, details, activeStep } = enrichmentStatus;
     const done = countries.resolved >= countries.total && details.resolved >= details.total;
     if (done) return <span className="enrichment-status">Artists fully enriched</span>;
 
-    const pct = countries.total > 0 ? Math.round((countries.resolved / countries.total) * 100) : 100;
+    // A step is actually running right now — show what it's doing, not a
+    // resolved/total percentage that can never reach 100% (some artists
+    // never resolve through any automated source at all).
+    if (activeStep) {
+      const label = ENRICHMENT_STEP_LABELS[activeStep.phase] ?? activeStep.phase;
+      return (
+        <span className="enrichment-status">
+          Artist Enrichment — {label} ({activeStep.checked}/{activeStep.total} checked)
+        </span>
+      );
+    }
+
+    // Nothing actively running (paused between passes, or hit the ceiling
+    // of what's automatically resolvable) — a settled summary, not a
+    // percentage that looks perpetually "in progress."
     return (
       <span className="enrichment-status">
-        Enriching artists — {countries.resolved}/{countries.total} ({pct}%)
+        Artist enrichment idle — {countries.resolved}/{countries.total} countries resolved
       </span>
     );
   }
@@ -275,8 +303,6 @@ export function App() {
         </button>
         <div className="tabs-status">
           {renderEnrichmentStatus()}
-          {/* Stub — not wired up yet. */}
-          <button className="page-button">Sync</button>
           <button className="page-button danger" onClick={handleDelete} disabled={deleting}>
             {deleting ? 'Deleting…' : 'Delete'}
           </button>

@@ -8,6 +8,7 @@ const songsDb = require('../db/songs');
 const artistsDb = require('../db/artists');
 const playlistsDb = require('../db/playlists');
 const usersDb = require('../db/users');
+const enrichmentProgress = require('../sources/enrichmentProgress');
 
 const MB_BATCH_SIZE = 15;
 const MB_REQUEST_DELAY_MS = 1100;
@@ -274,6 +275,7 @@ async function resolveCountries(artistList) {
 
   if (toResolve.length === 0) {
     console.log(`[artists] nothing to resolve (${artistList.length} artists cached)`);
+    enrichmentProgress.clear();
     return;
   }
 
@@ -307,6 +309,7 @@ async function resolveCountries(artistList) {
       console.error(`[artists] batch failed: ${err.message}`);
     }
 
+    enrichmentProgress.setStep('musicbrainz-search', searched, toResolve.length);
     await sleep(MB_REQUEST_DELAY_MS);
   }
 
@@ -321,6 +324,7 @@ async function resolveCountries(artistList) {
   } else if (needsFallback.length > 0) {
     console.log(`[artists] following up on ${needsFallback.length} artists missing country data`);
     let recovered = 0;
+    let fallbackChecked = 0;
 
     for (const { id, mbid } of needsFallback) {
       if (breaker.tripped) {
@@ -340,6 +344,8 @@ async function resolveCountries(artistList) {
       } catch (err) {
         console.error(`[artists] fallback lookup failed: ${err.message}`);
       }
+      fallbackChecked++;
+      enrichmentProgress.setStep('musicbrainz-fallback', fallbackChecked, needsFallback.length);
       await sleep(MB_REQUEST_DELAY_MS);
     }
 
@@ -351,6 +357,7 @@ async function resolveCountries(artistList) {
   if (stillNull.length > 0) {
     console.log(`[artists] trying Wikidata for ${stillNull.length} remaining artists`);
     let wikidataResolved = 0;
+    let wikidataChecked = 0;
 
     for (let i = 0; i < stillNull.length; i += WIKIDATA_BATCH_SIZE) {
       const batch = stillNull.slice(i, i + WIKIDATA_BATCH_SIZE);
@@ -366,6 +373,8 @@ async function resolveCountries(artistList) {
         console.error(`[artists] Wikidata batch failed: ${err.message}`);
       }
 
+      wikidataChecked += batch.length;
+      enrichmentProgress.setStep('wikidata-exact', wikidataChecked, stillNull.length);
       await sleep(WIKIDATA_REQUEST_DELAY_MS);
     }
 
@@ -379,6 +388,7 @@ async function resolveCountries(artistList) {
       );
 
       const qidById = {};
+      let fuzzyChecked = 0;
       for (const artist of stillNullAfterWikidata) {
         try {
           const qid = await wikidata.searchWikidataEntity(artist.name);
@@ -386,6 +396,8 @@ async function resolveCountries(artistList) {
         } catch (err) {
           console.error(`[artists] Wikidata fuzzy search failed: ${err.message}`);
         }
+        fuzzyChecked++;
+        enrichmentProgress.setStep('wikidata-fuzzy', fuzzyChecked, stillNullAfterWikidata.length);
         await sleep(WIKIDATA_FUZZY_DELAY_MS);
       }
 
@@ -416,6 +428,12 @@ async function resolveCountries(artistList) {
   }
 
   console.log('[artists] backfill complete');
+  // Signals "no active pass right now" — distinct from "fully resolved."
+  // Some artists never resolve through any automated source (see
+  // playlister_focus.md's coverage-ceiling note), so resolved/total alone
+  // would sit below 100% forever and read as permanently "in progress" if
+  // this weren't cleared once the cascade actually finishes.
+  enrichmentProgress.clear();
 }
 
 // For any artist still unresolved, scans every one of their tracks already

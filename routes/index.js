@@ -3,6 +3,7 @@ const spotify = require('../sources/spotify');
 const session = require('../sources/session');
 const syncQueue = require('../sources/syncQueue');
 const { wipeDatabase } = require('../sources/wipeDatabase');
+const enrichmentProgress = require('../sources/enrichmentProgress');
 const usersDb = require('../db/users');
 const artistsDb = require('../db/artists');
 const songsController = require('../controllers/songs');
@@ -97,7 +98,7 @@ router.on(
   'GET',
   '/api/enrichment-status',
   requireSession((req, res) => {
-    sendJson(res, artistsDb.getEnrichmentStatus());
+    sendJson(res, { ...artistsDb.getEnrichmentStatus(), activeStep: enrichmentProgress.getStep() });
   })
 );
 
@@ -152,20 +153,12 @@ router.on(
 );
 
 // Testing/dev tool, not a real multi-tenant feature — deletes the ENTIRE
-// database (every user's data, not just the caller's). Restricted to
-// ADMIN_USER_ID specifically: once other real people log in, any logged-in
-// user having a button that wipes everyone else's data too would be a real
-// footgun, not just a "delete my own stuff" action.
+// database, for every user, not just the caller's. Deliberately open to
+// any logged-in session, not just one admin — Lucas's explicit call.
 router.on(
   'POST',
   '/api/wipe-database',
   requireSession((req, res, userId) => {
-    if (!process.env.ADMIN_USER_ID || userId !== process.env.ADMIN_USER_ID) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'not_authorized' }));
-      return;
-    }
-
     session.clearSessionCookie(res);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     // Wait for the response to actually flush before tearing the process
