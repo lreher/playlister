@@ -26,7 +26,9 @@ function requireSession(handler) {
     // signature validity, so a stale cookie 401s cleanly on the first
     // request instead of the frontend having to fail its way there.
     if (!userId || !usersDb.getById(userId)) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
+      // no-store matters here specifically: a cached 401 would keep being
+      // served from that same fixed URL even after a real login succeeds.
+      res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({ error: 'not_authenticated' }));
       return;
     }
@@ -127,7 +129,7 @@ router.on(
         })
       );
     } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({ error: err.message }));
     }
   })
