@@ -593,6 +593,32 @@ real account, zero prior data) to exercise the whole pipeline end to end.
   on whatever's left of a throttled timer — a reasonable robustness improvement
   regardless of whether backgrounding was the exact cause here.
 
+## "Stuck at 47/47" — the real cause, found by reading real timestamps, not guessing
+
+After the genres/popularity phase became blocking (see above), Lucas kept hitting a
+loading screen frozen at "Fetching your playlists — 47/47 (100%)" for a long stretch
+before it ever moved to the genres/popularity step. Two earlier fixes (a
+`visibilitychange` re-poll, `Cache-Control: no-store` on the API responses) had already
+shipped for a similar-looking symptom and didn't resolve this one — a reminder that
+"looks like the same bug" isn't proof it *is* the same bug.
+
+Root cause, found by pulling exact timestamps from `journalctl` on two separate real
+syncs (not reasoned about, actually read): the main playlist loop finishes and reports
+47/47 quickly, but `syncPlaylists()` isn't done yet — a first-ever sync still has to seed
+the Liked-Songs pseudo-playlist via `fetchAllLikedTrackIds()`, a full sequential
+pagination walk over a user's entire Liked Songs (thousands of tracks). That walk had
+**zero progress reporting** — both real syncs showed it running silently for 35-40+
+seconds (`02:17:50` → `02:18:25`, then `02:25:39` → `02:26:15` on a retry) with the UI
+sitting at a stale 100% the whole time, not because anything was actually stuck.
+
+Fixed by giving that walk its own tracked phase, `liked-songs-seed`, reporting real
+incremental progress against Spotify's own total (same pattern as `syncSongs`). Verified
+locally by forcibly re-triggering the first-sync branch (deleting the Liked-Songs
+pseudo-playlist) and confirming progress moves continuously — 0 → 850 → 1700 → ... → 5045
+— between the `songs` and `details` phases, with no gap left unaccounted for. This phase
+only ever fires once per user (first sync only); a returning user's re-sync never hits
+this code path at all.
+
 ## Spotify API — hard-won findings
 
 - **Two Spotify Developer apps are in play.** The current `.env` credentials are for the

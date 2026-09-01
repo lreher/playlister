@@ -146,9 +146,18 @@ async function fetchPlaylistTracks(accessToken, playlistId) {
   return items;
 }
 
-async function fetchAllLikedTrackIds(accessToken) {
+// Only ever runs once per user (the first-sync seed) — but on a large
+// library this walk alone was silently taking 30-40+ seconds with zero
+// progress reporting, which is exactly what "stuck at 47/47 for a long
+// time" was: the main playlist loop's progress had already hit 100%, and
+// nothing updated again until this entire unreported walk finished. Proven
+// with real timestamps from server logs, not guessed — see
+// playlister_focus.md.
+async function fetchAllLikedTrackIds(accessToken, userId) {
   const tracks = [];
   let url = 'https://api.spotify.com/v1/me/tracks?limit=50';
+
+  usersDb.setSyncProgress(userId, 'liked-songs-seed', 0, null);
 
   while (url) {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
@@ -160,6 +169,7 @@ async function fetchAllLikedTrackIds(accessToken) {
     for (const item of data.items) {
       if (item.track?.id) tracks.push({ id: item.track.id, addedAt: item.added_at });
     }
+    usersDb.setSyncProgress(userId, 'liked-songs-seed', tracks.length, data.total);
     url = data.next;
   }
 
@@ -231,7 +241,7 @@ async function syncPlaylists(userId, accessToken, newLikedSongs) {
       public: false,
       collaborative: false,
       snapshotId: null,
-      tracks: await fetchAllLikedTrackIds(accessToken),
+      tracks: await fetchAllLikedTrackIds(accessToken, userId),
     };
   } else if (newLikedSongs.length > 0) {
     likedSongs.tracks = [

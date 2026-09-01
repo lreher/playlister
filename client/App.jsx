@@ -16,6 +16,7 @@ const ENRICHMENT_POLL_MS = 10000;
 const SYNC_PHASE_LABELS = {
   songs: 'Fetching your songs',
   playlists: 'Fetching your playlists',
+  'liked-songs-seed': 'Indexing your Liked Songs history',
   details: 'Resolving genres and popularity',
 };
 
