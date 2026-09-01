@@ -3,7 +3,7 @@ import { EMPTY_FILTERS } from './pages/songList/Filters';
 import { SongList } from './pages/songList';
 import { Dashboards } from './pages/dashboards';
 import { Events } from './pages/events';
-import { getMe, getSyncStatus } from './api';
+import { getMe, getSyncStatus, getEnrichmentStatus } from './api';
 
 const PATH_FOR_TAB = { list: '/', dashboards: '/dashboards', events: '/events' };
 const TAB_FOR_PATH = { '/': 'list', '/dashboards': 'dashboards', '/events': 'events' };
@@ -11,6 +11,7 @@ const TAB_FOR_PATH = { '/': 'list', '/dashboards': 'dashboards', '/events': 'eve
 const tabFromLocation = () => TAB_FOR_PATH[window.location.pathname] ?? 'list';
 
 const SYNC_POLL_MS = 2500;
+const ENRICHMENT_POLL_MS = 10000;
 
 export function App() {
   const [tab, setTab] = useState(tabFromLocation);
@@ -22,6 +23,7 @@ export function App() {
   const [user, setUser] = useState(null);
   const [syncError, setSyncError] = useState(null);
   const [syncProgress, setSyncProgress] = useState(null);
+  const [enrichmentStatus, setEnrichmentStatus] = useState(null);
 
   // On mount: who is this, if anyone? Every /api/* route requires a real
   // session now, so this is the one place that decides whether to show the
@@ -71,6 +73,44 @@ export function App() {
     // looks exactly like "stuck at 100%" until you switch back. Re-poll
     // immediately the moment the tab is visible again, rather than waiting
     // for whatever's left of a throttled interval.
+    function handleVisibility() {
+      if (document.visibilityState === 'visible') {
+        if (timer) clearTimeout(timer);
+        poll();
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [status]);
+
+  // The slow global enrichment pass (country/genre/popularity resolution)
+  // keeps running in the background long after a user's own library is
+  // ready — poll for it separately, only once the app shell is actually
+  // showing, so there's a persistent sense of "still working" rather than
+  // it silently happening with no visibility. Stops polling once fully
+  // resolved rather than continuing to hit the endpoint for no reason.
+  useEffect(() => {
+    if (status !== 'ready') return;
+    let cancelled = false;
+    let timer = null;
+
+    function poll() {
+      getEnrichmentStatus()
+        .then((result) => {
+          if (cancelled) return;
+          setEnrichmentStatus(result);
+          const done = result.countries.resolved >= result.countries.total && result.details.resolved >= result.details.total;
+          if (!done) timer = setTimeout(poll, ENRICHMENT_POLL_MS);
+        })
+        .catch(() => {}); // best-effort status display — not worth bouncing the user over
+    }
+    poll();
+
     function handleVisibility() {
       if (document.visibilityState === 'visible') {
         if (timer) clearTimeout(timer);
@@ -146,6 +186,20 @@ export function App() {
     );
   }
 
+  function renderEnrichmentStatus() {
+    if (!enrichmentStatus) return null;
+    const { countries, details } = enrichmentStatus;
+    const done = countries.resolved >= countries.total && details.resolved >= details.total;
+    if (done) return <span className="enrichment-status">Artists fully enriched</span>;
+
+    const pct = countries.total > 0 ? Math.round((countries.resolved / countries.total) * 100) : 100;
+    return (
+      <span className="enrichment-status">
+        Enriching artists — {countries.resolved}/{countries.total} ({pct}%)
+      </span>
+    );
+  }
+
   function switchTab(next) {
     setTab(next);
     if (next === 'dashboards') setDashboardsVisited(true);
@@ -183,6 +237,12 @@ export function App() {
         <button className={`tab-button ${tab === 'events' ? 'active' : ''}`} onClick={() => switchTab('events')}>
           Events
         </button>
+        <div className="tabs-status">
+          {renderEnrichmentStatus()}
+          {/* Stubs — not wired up yet. */}
+          <button className="page-button">Sync</button>
+          <button className="page-button danger">Delete</button>
+        </div>
       </div>
 
       <div style={{ display: tab === 'list' ? '' : 'none' }}>

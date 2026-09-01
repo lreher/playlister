@@ -65,6 +65,21 @@ const upsert = (id, patch) => {
   return getById(id);
 };
 
+// Computed live from the actual rows, not a separate persisted counter —
+// unlike the fast-sync phase's progress (which needed to survive a
+// mid-sync restart), enrichment progress is always exactly reconstructable
+// from real resolved/unresolved counts, so there's nothing to keep in sync.
+// Global, same as the rest of enrichment — not scoped to any one user.
+const getEnrichmentStatus = () => {
+  const total = db.prepare('SELECT COUNT(*) AS c FROM artists').get().c;
+  const countriesResolved = db.prepare('SELECT COUNT(*) AS c FROM artists WHERE country IS NOT NULL').get().c;
+  const detailsResolved = db.prepare('SELECT COUNT(*) AS c FROM artists WHERE details_resolved = 1').get().c;
+  return {
+    countries: { resolved: countriesResolved, total },
+    details: { resolved: detailsResolved, total },
+  };
+};
+
 module.exports = {
   getAll,
   getById,
@@ -73,4 +88,5 @@ module.exports = {
   getPopularity,
   getFollowers,
   upsert,
+  getEnrichmentStatus,
 };

@@ -3,6 +3,7 @@ const spotify = require('../sources/spotify');
 const session = require('../sources/session');
 const syncQueue = require('../sources/syncQueue');
 const usersDb = require('../db/users');
+const artistsDb = require('../db/artists');
 const songsController = require('../controllers/songs');
 const { getQueryParams, sendJson } = require('./utils');
 const { registerStaticRoutes } = require('./static');
@@ -83,6 +84,17 @@ router.on(
   '/api/sync-status',
   requireSession((req, res, userId) => {
     sendJson(res, usersDb.getSyncStatus(userId));
+  })
+);
+
+// Global, not user-scoped (see db/artists.js) — polled by the app shell
+// while browsing, separately from /api/sync-status which only matters
+// during the initial login/fast-sync wait.
+router.on(
+  'GET',
+  '/api/enrichment-status',
+  requireSession((req, res) => {
+    sendJson(res, artistsDb.getEnrichmentStatus());
   })
 );
 

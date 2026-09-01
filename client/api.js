@@ -27,6 +27,10 @@ export function getSyncStatus() {
   return fetchJson('/api/sync-status');
 }
 
+export function getEnrichmentStatus() {
+  return fetchJson('/api/enrichment-status');
+}
+
 export function getFilters() {
   return fetchJson('/api/filters');
 }

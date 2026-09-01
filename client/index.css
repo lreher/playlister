@@ -91,6 +91,30 @@ h1 {
   border-bottom-color: var(--accent);
 }
 
+.tabs-status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding-bottom: 0.6rem;
+}
+
+.enrichment-status {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.page-button.danger {
+  border-color: #e5484d;
+  color: #e5484d;
+}
+
+.page-button.danger:hover:not(:disabled) {
+  background: #e5484d;
+  color: #ffffff;
+}
+
 #dashboards {
   max-width: 1400px;
   margin: 0 auto;
