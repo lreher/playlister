@@ -5,7 +5,18 @@ const upsertRow = db.prepare(`
   INSERT INTO users (id, display_name) VALUES (@id, @displayName)
   ON CONFLICT(id) DO UPDATE SET display_name = @displayName
 `);
-const updateSyncStatus = db.prepare('UPDATE users SET sync_status = ?, sync_error = ? WHERE id = ?');
+// Setting status also clears progress: progress only means anything while
+// mid-sync (between a 'syncing' status and the 'done'/'error' that ends
+// it), and this is the one place both transitions happen — no separate
+// "clear progress" call needed anywhere else.
+const updateSyncStatus = db.prepare(`
+  UPDATE users SET sync_status = ?, sync_error = ?,
+    sync_progress_phase = NULL, sync_progress_current = NULL, sync_progress_total = NULL
+  WHERE id = ?
+`);
+const updateSyncProgress = db.prepare(
+  'UPDATE users SET sync_progress_phase = ?, sync_progress_current = ?, sync_progress_total = ? WHERE id = ?'
+);
 
 function rowToUser(row) {
   return {
@@ -13,6 +24,10 @@ function rowToUser(row) {
     displayName: row.display_name,
     syncStatus: row.sync_status,
     syncError: row.sync_error,
+    syncProgress:
+      row.sync_progress_phase == null
+        ? null
+        : { phase: row.sync_progress_phase, current: row.sync_progress_current, total: row.sync_progress_total },
     createdAt: row.created_at,
   };
 }
@@ -35,9 +50,15 @@ const setSyncStatus = (id, status, error = null) => {
   updateSyncStatus.run(status, error, id);
 };
 
-const getSyncStatus = (id) => {
-  const user = getById(id);
-  return user ? { status: user.syncStatus, error: user.syncError } : null;
+// `total` is nullable — a phase can report "in progress, count unknown
+// yet" (e.g. songs, before the first page tells us the real total).
+const setSyncProgress = (id, phase, current, total) => {
+  updateSyncProgress.run(phase, current, total, id);
 };
 
-module.exports = { getById, getAll, upsert, setSyncStatus, getSyncStatus };
+const getSyncStatus = (id) => {
+  const user = getById(id);
+  return user ? { status: user.syncStatus, error: user.syncError, progress: user.syncProgress } : null;
+};
+
+module.exports = { getById, getAll, upsert, setSyncStatus, setSyncProgress, getSyncStatus };

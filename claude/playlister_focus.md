@@ -524,6 +524,55 @@ re-keyed, re-run correctly reports "already migrated" and no-ops. **Not yet run 
 the droplet's live database** — needs the same treatment (backup, run once by hand over
 SSH, verify) before this ships, per the Deployment section's migration-first pattern.
 
+## Multi-tenancy: bugs caught in production, post-deploy (Aug 31 2026)
+
+Real second-user experiment: backed up and wiped the droplet's live DB entirely (both
+the droplet and locally), had Lucas log in fresh as a genuine cold-start "new user" (his
+real account, zero prior data) to exercise the whole pipeline end to end.
+
+- **`playlist_tracks` INSERT crash on a playlist containing the same track twice.**
+  `db/playlists.js`'s `insertTrack` was a plain `INSERT`, not `INSERT OR IGNORE`, against
+  `playlist_tracks`' `(playlist_id, song_id)` primary key. A real Spotify playlist can
+  legitimately contain the same track more than once (no error on Spotify's end) — the
+  first time this got exercised was this cold-start experiment, since it force-refetched
+  all 47 real playlists at once instead of the usual snapshot_id-skip that had let most
+  of them go untouched for a long time. Crashed the whole `playlistsDb.set()` transaction,
+  rolling back to **zero playlists synced** even though songs had already committed
+  separately (global table) — which is exactly why the symptom looked like "sync isn't
+  working, no songs" (visibility scoping correctly found nothing, since nothing was
+  linked through any playlist). Fixed: `INSERT OR IGNORE` — schema only tracks
+  membership, not multiplicity, so a repeat should just no-op. Verified against the real
+  duplicate by re-running a full sync locally against Lucas's real 47 playlists after the
+  fix — completed clean.
+- **The failure was invisible in server logs — a real gap, not just this one incident.**
+  `sources/syncQueue.js`'s fast-sync `.catch()` wrote the error to `sync_status`/
+  `sync_error` on the `users` row but never logged anything to the console. Diagnosing
+  the crash required SSHing in and querying the database by hand rather than just reading
+  `journalctl` — direct server-state inspection is still preferable to guessing (see
+  musings.md's Instrumentation-over-deduction note), but it shouldn't have to be the
+  *only* way to see a crash happened at all. Fixed: `console.error` on fast-sync failure,
+  plus a `console.log` right when a queued sync actually starts running (not just when
+  it's requested) — makes "is anything actually happening" directly checkable via logs
+  instead of a database query.
+- **Sync progress now reported, not just a static "please wait."** Lucas's explicit ask
+  after seeing a blank loading screen with no way to tell if it was working: a
+  `sync_progress_phase`/`current`/`total` set of columns on `users` (nullable — only
+  meaningful mid-sync, cleared whenever `setSyncStatus` runs), updated during
+  `syncSongs`'s pagination (against Spotify's own `total` liked-songs count) and
+  `syncPlaylists`'s per-playlist loop (against the fetched playlist count). Exposed
+  through the existing `/api/sync-status` response as a nested `progress` object — no new
+  route needed. `App.jsx`'s loading screen shows a phase label + "current/total (pct%)" +
+  a small CSS progress bar once a real total is known (no bar/percent for the songs phase
+  before its first page comes back and reveals the total, to avoid a misleading 0%).
+- **Additive schema change, self-migrating inline rather than a whole new migration
+  script.** The `sync_progress_*` columns needed adding to an already-live `users` table
+  (both local and droplet) — `CREATE TABLE IF NOT EXISTS` alone wouldn't touch it (same
+  no-op-on-existing-table behavior documented under the multi-tenancy migration above).
+  Small enough (nullable, purely additive) not to warrant a dedicated migration script
+  like the multi-tenant one did: `db/database.js` just checks `PRAGMA table_info(users)`
+  and runs `ALTER TABLE ... ADD COLUMN` for whatever's missing, every time it's required —
+  safe, idempotent, self-healing on both fresh installs and the two already-live databases.
+
 ## Spotify API — hard-won findings
 
 - **Two Spotify Developer apps are in play.** The current `.env` credentials are for the

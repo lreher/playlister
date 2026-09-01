@@ -239,6 +239,31 @@ h1 {
   filter: brightness(1.1);
 }
 
+.sync-progress {
+  margin-top: 1.5rem;
+}
+
+.sync-progress-label {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin: 0 0 0.5rem;
+}
+
+.sync-progress-bar {
+  width: 240px;
+  height: 6px;
+  margin: 0 auto;
+  background: var(--bg-elevated);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.sync-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease-out;
+}
+
 .toolbar {
   display: flex;
   align-items: center;

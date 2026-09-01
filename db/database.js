@@ -22,6 +22,13 @@ db.exec(`
     display_name TEXT,
     sync_status TEXT NOT NULL DEFAULT 'idle',   -- idle|syncing|done|error
     sync_error TEXT,
+    -- Only meaningful while sync_status = 'syncing' — set by
+    -- runFastSync's own progress reporting (scripts/sync.js), read by
+    -- /api/sync-status so the frontend can show something better than a
+    -- static "please wait." NULL the rest of the time.
+    sync_progress_phase TEXT,            -- 'songs' | 'playlists'
+    sync_progress_current INTEGER,
+    sync_progress_total INTEGER,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
 
@@ -109,6 +116,21 @@ db.exec(`
     expires_at INTEGER
   );
 `);
+
+// CREATE TABLE IF NOT EXISTS above only takes effect for a brand-new file —
+// it no-ops against a `users` table that already exists in an older shape
+// (both the local and droplet databases do, predating sync_progress_*).
+// Small enough (nullable, additive columns) not to warrant a whole
+// migration script like the multi-tenant one did — just self-heal here,
+// safe to run on every require.
+const userColumns = new Set(db.prepare('PRAGMA table_info(users)').all().map((c) => c.name));
+for (const [column, type] of [
+  ['sync_progress_phase', 'TEXT'],
+  ['sync_progress_current', 'INTEGER'],
+  ['sync_progress_total', 'INTEGER'],
+]) {
+  if (!userColumns.has(column)) db.exec(`ALTER TABLE users ADD COLUMN ${column} ${type}`);
+}
 
 // No PRAGMA foreign_keys — deliberately off (SQLite's own default). Artist
 // resolution (country/genres/popularity) is a separate, later pass from

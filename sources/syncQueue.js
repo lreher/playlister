@@ -20,13 +20,25 @@ let fastQueue = Promise.resolve();
 let enrichQueue = Promise.resolve();
 
 function enqueueSync(userId) {
+  console.log(`[sync] queued for user ${userId}`);
   fastQueue = fastQueue
-    .then(() => sync.runFastSync(userId))
+    .then(() => {
+      console.log(`[sync] now running for user ${userId}`);
+      return sync.runFastSync(userId);
+    })
     .then((accessToken) => {
       usersDb.setSyncStatus(userId, 'done');
       enqueueEnrichment(accessToken);
     })
-    .catch((err) => usersDb.setSyncStatus(userId, 'error', err.message));
+    .catch((err) => {
+      // Previously silent — a fast-sync crash only ever showed up in the
+      // database (sync_error), never in the process's own console output,
+      // which made a real crash indistinguishable from "still working"
+      // without SSHing in to query the DB by hand. Logged here now for the
+      // same reason enqueueEnrichment already did below.
+      console.error(`[sync] fast sync failed for user ${userId}:`, err.message);
+      usersDb.setSyncStatus(userId, 'error', err.message);
+    });
 }
 
 // Not user-scoped — enrichment writes to the global artists table, so it

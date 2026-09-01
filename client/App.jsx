@@ -21,6 +21,7 @@ export function App() {
   const [status, setStatus] = useState('loading');
   const [user, setUser] = useState(null);
   const [syncError, setSyncError] = useState(null);
+  const [syncProgress, setSyncProgress] = useState(null);
 
   // On mount: who is this, if anyone? Every /api/* route requires a real
   // session now, so this is the one place that decides whether to show the
@@ -56,6 +57,7 @@ export function App() {
             setSyncError(result.error);
             setStatus('sync-error');
           } else {
+            setSyncProgress(result.progress);
             setTimeout(poll, SYNC_POLL_MS);
           }
         })
@@ -81,9 +83,28 @@ export function App() {
   }, []);
 
   if (status === 'loading' || status === 'checking-sync') {
+    // total is nullable (the songs phase doesn't know it until its first
+    // page comes back) — no percent/bar until there's something real to
+    // show, rather than a misleading 0%.
+    const pct =
+      syncProgress?.total > 0 ? Math.min(100, Math.round((syncProgress.current / syncProgress.total) * 100)) : null;
+
     return (
       <div className="login-container">
         <p>{status === 'checking-sync' ? 'Building your library…' : 'Loading…'}</p>
+        {syncProgress && (
+          <div className="sync-progress">
+            <p className="sync-progress-label">
+              {syncProgress.phase === 'songs' ? 'Fetching your songs' : 'Fetching your playlists'}
+              {pct !== null && ` — ${syncProgress.current}/${syncProgress.total} (${pct}%)`}
+            </p>
+            {pct !== null && (
+              <div className="sync-progress-bar">
+                <div className="sync-progress-fill" style={{ width: `${pct}%` }} />
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   }

@@ -75,6 +75,8 @@ async function syncSongs(accessToken, userId) {
   let url = 'https://api.spotify.com/v1/me/tracks?limit=50';
   let reachedKnown = false;
 
+  usersDb.setSyncProgress(userId, 'songs', 0, null);
+
   while (url && !reachedKnown) {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!res.ok) {
@@ -89,6 +91,11 @@ async function syncSongs(accessToken, userId) {
       }
       rawNewItems.push(item);
     }
+    // data.total is this user's whole Liked Songs count, not just what's
+    // new — the honest denominator for a brand-new user (existingIds
+    // starts empty, so "new" and "total" mean the same thing); a returning
+    // user's bar just moves fast and finishes early, which is accurate.
+    usersDb.setSyncProgress(userId, 'songs', rawNewItems.length, data.total);
 
     url = reachedKnown ? null : data.next;
   }
@@ -183,7 +190,8 @@ async function syncPlaylists(userId, accessToken, newLikedSongs) {
   const updated = [];
   let changedCount = 0;
 
-  for (const remote of remotePlaylists) {
+  for (const [index, remote] of remotePlaylists.entries()) {
+    usersDb.setSyncProgress(userId, 'playlists', index, remotePlaylists.length);
     const current = existingById.get(remote.id);
 
     if (current && current.snapshotId === remote.snapshot_id) {
@@ -205,6 +213,7 @@ async function syncPlaylists(userId, accessToken, newLikedSongs) {
       tracks: items.map((item) => ({ id: item.track.id, addedAt: item.added_at })),
     });
   }
+  usersDb.setSyncProgress(userId, 'playlists', remotePlaylists.length, remotePlaylists.length);
 
   const likedSongsId = playlistsDb.likedSongsId(userId);
   let likedSongs = existingById.get(likedSongsId);
