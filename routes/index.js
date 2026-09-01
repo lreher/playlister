@@ -19,7 +19,11 @@ registerStaticRoutes(router);
 function requireSession(handler) {
   return (req, res, ...rest) => {
     const userId = session.getSessionUserId(req);
-    if (!userId) {
+    // A validly-signed cookie can still point at a user row that no longer
+    // exists (e.g. the database was reset) — check both, not just
+    // signature validity, so a stale cookie 401s cleanly on the first
+    // request instead of the frontend having to fail its way there.
+    if (!userId || !usersDb.getById(userId)) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'not_authenticated' }));
       return;
