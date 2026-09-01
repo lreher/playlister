@@ -208,30 +208,20 @@ export function App() {
     );
   }
 
+  // Only ever renders while a step is actually running — no "idle" or
+  // "fully enriched" resting state. Some artists never resolve through any
+  // automated source at all, so a static summary here would just sit
+  // there forever once a pass settles; showing nothing when there's
+  // nothing actively happening is more honest than a number that looks
+  // perpetually "in progress" (or, worse, stuck).
   function renderEnrichmentStatus() {
-    if (!enrichmentStatus) return null;
-    const { countries, details, activeStep } = enrichmentStatus;
-    const done = countries.resolved >= countries.total && details.resolved >= details.total;
-    if (done) return <span className="enrichment-status">Artists fully enriched</span>;
+    const activeStep = enrichmentStatus?.activeStep;
+    if (!activeStep) return null;
 
-    // A step is actually running right now — show what it's doing, not a
-    // resolved/total percentage that can never reach 100% (some artists
-    // never resolve through any automated source at all).
-    if (activeStep) {
-      const label = ENRICHMENT_STEP_LABELS[activeStep.phase] ?? activeStep.phase;
-      return (
-        <span className="enrichment-status">
-          Artist Enrichment — {label} ({activeStep.checked}/{activeStep.total} checked)
-        </span>
-      );
-    }
-
-    // Nothing actively running (paused between passes, or hit the ceiling
-    // of what's automatically resolvable) — a settled summary, not a
-    // percentage that looks perpetually "in progress."
+    const label = ENRICHMENT_STEP_LABELS[activeStep.phase] ?? activeStep.phase;
     return (
       <span className="enrichment-status">
-        Artist enrichment idle — {countries.resolved}/{countries.total} countries resolved
+        Artist Enrichment — {label} ({activeStep.checked}/{activeStep.total} checked)
       </span>
     );
   }
