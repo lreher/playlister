@@ -15,7 +15,12 @@ const insertPlaylist = db.prepare(`
     name = @name, owner_name = @ownerName, public = @public,
     collaborative = @collaborative, snapshot_id = @snapshotId
 `);
-const insertTrack = db.prepare('INSERT INTO playlist_tracks (playlist_id, song_id, added_at) VALUES (?, ?, ?)');
+// OR IGNORE, not a plain INSERT: a real Spotify playlist can legitimately
+// contain the same track more than once (add it twice, no error on
+// Spotify's end) — our schema only tracks membership, not multiplicity, so
+// a repeat within one playlist's fetched track list should just no-op
+// rather than crash on the (playlist_id, song_id) primary key.
+const insertTrack = db.prepare('INSERT OR IGNORE INTO playlist_tracks (playlist_id, song_id, added_at) VALUES (?, ?, ?)');
 const deletePlaylistTracks = db.prepare('DELETE FROM playlist_tracks WHERE playlist_id = ?');
 const deletePlaylist = db.prepare('DELETE FROM playlists WHERE user_id = ? AND id = ?');
 const selectExistingIds = db.prepare('SELECT id FROM playlists WHERE user_id = ?');
