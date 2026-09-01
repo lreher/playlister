@@ -2,6 +2,7 @@ const FindMyWay = require('find-my-way');
 const spotify = require('../sources/spotify');
 const session = require('../sources/session');
 const syncQueue = require('../sources/syncQueue');
+const { wipeDatabase } = require('../sources/wipeDatabase');
 const usersDb = require('../db/users');
 const artistsDb = require('../db/artists');
 const songsController = require('../controllers/songs');
@@ -145,6 +146,35 @@ router.on(
   '/api/stats',
   requireSession((req, res, userId) => {
     sendJson(res, songsController.getStats(userId));
+  })
+);
+
+// Testing/dev tool, not a real multi-tenant feature — deletes the ENTIRE
+// database (every user's data, not just the caller's). Restricted to
+// ADMIN_USER_ID specifically: once other real people log in, any logged-in
+// user having a button that wipes everyone else's data too would be a real
+// footgun, not just a "delete my own stuff" action.
+router.on(
+  'POST',
+  '/api/wipe-database',
+  requireSession((req, res, userId) => {
+    if (!process.env.ADMIN_USER_ID || userId !== process.env.ADMIN_USER_ID) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_authorized' }));
+      return;
+    }
+
+    session.clearSessionCookie(res);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    // Wait for the response to actually flush before tearing the process
+    // down — process.exit() right after queuing res.end() risks the client
+    // never seeing the response at all. The exit code matters: 1 (not 0)
+    // is what makes systemd's Restart=on-failure actually bring the
+    // process back up, fresh, against a freshly-recreated empty database.
+    res.end(JSON.stringify({ ok: true }), () => {
+      wipeDatabase();
+      process.exit(1);
+    });
   })
 );
 

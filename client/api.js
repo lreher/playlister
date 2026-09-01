@@ -31,6 +31,15 @@ export function getEnrichmentStatus() {
   return fetchJson('/api/enrichment-status');
 }
 
+export async function wipeDatabase() {
+  const res = await fetch('/api/wipe-database', { method: 'POST' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to delete');
+  }
+  return res.json();
+}
+
 export function getFilters() {
   return fetchJson('/api/filters');
 }

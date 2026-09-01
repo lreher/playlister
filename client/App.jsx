@@ -3,7 +3,7 @@ import { EMPTY_FILTERS } from './pages/songList/Filters';
 import { SongList } from './pages/songList';
 import { Dashboards } from './pages/dashboards';
 import { Events } from './pages/events';
-import { getMe, getSyncStatus, getEnrichmentStatus } from './api';
+import { getMe, getSyncStatus, getEnrichmentStatus, wipeDatabase } from './api';
 
 const PATH_FOR_TAB = { list: '/', dashboards: '/dashboards', events: '/events' };
 const TAB_FOR_PATH = { '/': 'list', '/dashboards': 'dashboards', '/events': 'events' };
@@ -24,6 +24,7 @@ export function App() {
   const [syncError, setSyncError] = useState(null);
   const [syncProgress, setSyncProgress] = useState(null);
   const [enrichmentStatus, setEnrichmentStatus] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   // On mount: who is this, if anyone? Every /api/* route requires a real
   // session now, so this is the one place that decides whether to show the
@@ -200,6 +201,32 @@ export function App() {
     );
   }
 
+  // Testing tool, not a real feature (see routes/index.js's
+  // /api/wipe-database) — wipes the ENTIRE database for every user, not
+  // just this account, so the confirm text says so explicitly rather than
+  // reading like a normal "delete my data" action.
+  function handleDelete() {
+    if (
+      !confirm(
+        'This permanently deletes the ENTIRE database for ALL users, not just your own account, and cannot be undone. Continue?'
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    wipeDatabase()
+      .then(() => {
+        // The server process is about to restart (systemd) — an immediate
+        // reload could land mid-restart and show a connection error
+        // instead of the fresh login screen. A short delay gives it time.
+        setTimeout(() => window.location.reload(), 2000);
+      })
+      .catch((err) => {
+        setDeleting(false);
+        alert(`Failed to delete: ${err.message}`);
+      });
+  }
+
   function switchTab(next) {
     setTab(next);
     if (next === 'dashboards') setDashboardsVisited(true);
@@ -239,9 +266,11 @@ export function App() {
         </button>
         <div className="tabs-status">
           {renderEnrichmentStatus()}
-          {/* Stubs — not wired up yet. */}
+          {/* Stub — not wired up yet. */}
           <button className="page-button">Sync</button>
-          <button className="page-button danger">Delete</button>
+          <button className="page-button danger" onClick={handleDelete} disabled={deleting}>
+            {deleting ? 'Deleting…' : 'Delete'}
+          </button>
         </div>
       </div>
 
