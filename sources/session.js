@@ -10,6 +10,10 @@ const COOKIE_NAME = 'sid';
 const MAX_AGE_SECONDS = 60 * 60 * 24 * 365; // 1 year — Spotify OAuth is the
 // real login here, this cookie just remembers who already completed it.
 
+function isProduction() {
+  return process.env.NODE_ENV === 'production';
+}
+
 function hmac(value) {
   return crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('hex');
 }
@@ -59,12 +63,14 @@ function setSessionCookie(res, userId) {
     'Path=/',
     `Max-Age=${MAX_AGE_SECONDS}`,
   ];
-  if (process.env.NODE_ENV === 'production') parts.push('Secure');
+  if (isProduction()) parts.push('Secure');
   res.setHeader('Set-Cookie', parts.join('; '));
 }
 
 function clearSessionCookie(res) {
-  res.setHeader('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; Path=/; Max-Age=0`);
+  const parts = [`${COOKIE_NAME}=`, 'HttpOnly', 'Path=/', 'Max-Age=0'];
+  if (isProduction()) parts.push('Secure');
+  res.setHeader('Set-Cookie', parts.join('; '));
 }
 
 // OAuth CSRF protection: /login mints a random value, stashes it in its own
@@ -80,7 +86,9 @@ function generateState() {
 }
 
 function setStateCookie(res, state) {
-  res.setHeader('Set-Cookie', `${STATE_COOKIE_NAME}=${state}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`);
+  const parts = [`${STATE_COOKIE_NAME}=${state}`, 'HttpOnly', 'SameSite=Lax', 'Path=/', 'Max-Age=600'];
+  if (isProduction()) parts.push('Secure');
+  res.setHeader('Set-Cookie', parts.join('; '));
 }
 
 function verifyState(req, queryState) {
