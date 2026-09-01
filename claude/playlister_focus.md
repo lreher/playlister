@@ -935,31 +935,39 @@ other clone that currently exists.
 
 ## Open items / natural next steps
 
-- **Multi-tenancy is built and locally verified, not yet deployed.** Still needed before
-  it's live: allowlist a second real Spotify account in the Spotify Developer Dashboard
-  and do one real two-account OAuth test in an actual browser (everything so far was
-  verified via a synthetic DB-seeded second user + a manually-minted session cookie, not
-  a real second Spotify login); back up the droplet's `data/playlister.db` and run
-  `npm run migrate-multi-tenant` there by hand over SSH, same as was done locally, before
-  the next `npm run deploy`.
-- "Create Playlist" button is a no-op stub — wiring it up to actually build a Spotify
-  playlist from the current filtered view is the obvious next feature (would need the
-  `playlist-modify-private`/`playlist-modify-public` scope added to the OAuth flow). Now
-  that tokens are per-user, this could write to *any* logged-in user's own account, not
-  just Lucas's.
-- ~300 artists with no resolvable country from any automated source — options discussed:
-  accept as the practical ceiling, manual override UI, or manual per-artist web research
-  (not automatable cheaply).
+(Status as of end of day Aug 31 2026 — multi-tenancy shipped and live this session.)
+
+- **Multi-tenancy is deployed and live**, exercised heavily this session — but always as
+  Lucas's own one real account, repeatedly wiped (via the Delete button or by hand) and
+  logged back in as a stand-in "new user." **Still genuinely open**: allowlist a second
+  real Spotify account in the Developer Dashboard and do one real two-account login side
+  by side, to confirm cross-tenant isolation holds for an actual second identity — the
+  strongest evidence so far is still the synthetic DB-seeded second user from earlier in
+  the session, not a real second login.
+- **The Delete button wipes the entire database (every user's data) and is deliberately
+  open to any logged-in session right now**, not gated to one admin — Lucas's explicit
+  call, made knowingly ("yes I understand how dumb that sounds"). Worth revisiting once
+  real other users are actually using this day to day, not just Lucas testing solo.
+- The Sync button was removed entirely (it was always an unwired stub) — there's no
+  manual "resync now" trigger in the UI at all today. `npm run sync <userId>` (droplet
+  SSH) or logging back in are the only ways to trigger a sync.
+- "Create Playlist" button is still a no-op stub — wiring it up to actually build a
+  Spotify playlist from the current filtered view is the obvious next feature (needs
+  `playlist-modify-private`/`playlist-modify-public` added to the OAuth scope). Now that
+  tokens are per-user, this would write to *any* logged-in user's own account, not just
+  Lucas's.
+- ~300-350 artists (of ~4500) have no resolvable country from any automated source —
+  accepted as the practical ceiling; the enrichment status UI now reflects this honestly
+  (only shows while a step is actively running, never a stalled-looking percentage).
+  Options discussed for going further: manual override UI, or manual per-artist web
+  research (not automatable cheaply). Not started.
 - The stray `artist-countries copy.json` file's origin is still unexplained.
-- **Events tab has no real content yet** — currently a deliberate stub (see "Events tab"
-  above). What it should actually show has never been discussed.
-- **Browser-side caching gap** — `routes/static.js`'s static responses still send no
-  `Cache-Control` header at all. `npm run deploy` purging Cloudflare's edge cache covers
-  the failure mode that actually bit us; a visitor's own browser caching a file from
-  *before* their most recent visit is a real, narrower remaining gap (see "Deployment").
-- Add `https://playlister.lucasreher.com/callback` as a redirect URI in the Spotify
-  Developer Dashboard — not done yet, only matters once `ENABLE_LOGIN` needs flipping on
-  on the droplet for a real (re-)authentication.
+- **Events tab has no real content yet** — still a deliberate TBD stub. What it should
+  actually show has never been discussed.
+- **Browser-side caching gap on static assets** — `routes/static.js`'s responses still
+  send no `Cache-Control` header at all (distinct from the dynamic-API gap fixed this
+  session — every JSON response now sends `Cache-Control: no-store`, see the
+  Multi-tenancy sections above). Not yet touched.
 
 ## Roadmap (declared, not yet started unless noted)
 
@@ -967,3 +975,6 @@ other clone that currently exists.
   architecture" above.
 - **Move to SQLite** — **done**. See "Data layer: SQLite" above.
 - **Deploy it** — **done, live** at `playlister.lucasreher.com`. See "Deployment" above.
+- **Multi-tenancy** — **done, live**, shipped and iterated on heavily in one long session
+  (Aug 31 2026). See the "Multi-tenancy" sections above for the architecture, the real
+  bugs found and fixed, and what's still open (a real second-account test chief among it).
