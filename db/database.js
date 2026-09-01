@@ -10,7 +10,21 @@ const isrcCountry = require('../utils/isrcCountry');
 
 const db = new DatabaseSync(path.join(__dirname, '../data/playlister.db'));
 
+// Background per-user syncs are now a routine concurrent event (one user's
+// sync running while another user browses) — WAL lets readers proceed
+// without blocking on a writer, which mattered far less back when the only
+// writer was ever a single foreground CLI script.
+db.exec('PRAGMA journal_mode = WAL');
+
 db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,                 -- Spotify user id, from GET /v1/me
+    display_name TEXT,
+    sync_status TEXT NOT NULL DEFAULT 'idle',   -- idle|syncing|done|error
+    sync_error TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+
   CREATE TABLE IF NOT EXISTS artists (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -56,15 +70,29 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_song_artists_song ON song_artists(song_id);
   CREATE INDEX IF NOT EXISTS idx_song_artists_artist ON song_artists(artist_id);
 
+  -- Composite PK, not just id: a real Spotify playlist can be followed by
+  -- more than one Playlister account (e.g. two users both follow the same
+  -- collaborative playlist) — a single-id PK would let the second user's
+  -- sync silently steal the row's ownership from the first.
   CREATE TABLE IF NOT EXISTS playlists (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id),
     name TEXT NOT NULL,
     owner_name TEXT,
     public INTEGER,
     collaborative INTEGER,
-    snapshot_id TEXT
+    snapshot_id TEXT,
+    PRIMARY KEY (id, user_id)
   );
+  CREATE INDEX IF NOT EXISTS idx_playlists_user ON playlists(user_id);
 
+  -- Deliberately no user_id here: a real playlist's track list is the same
+  -- objective content no matter which user is looking at it (same reasoning
+  -- as artists/songs staying global), so this stays keyed by playlist_id
+  -- only, shared across whichever users follow that playlist. The one
+  -- pseudo-playlist that ISN'T real shared Spotify data — Liked Songs — gets
+  -- a per-user-unique id instead (see db/playlists.js's likedSongsId) so two
+  -- users' liked-songs content can never collide here.
   CREATE TABLE IF NOT EXISTS playlist_tracks (
     playlist_id TEXT NOT NULL,
     song_id TEXT NOT NULL,
@@ -75,7 +103,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_playlist_tracks_song ON playlist_tracks(song_id);
 
   CREATE TABLE IF NOT EXISTS tokens (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
+    user_id TEXT PRIMARY KEY REFERENCES users(id),
     access_token TEXT,
     refresh_token TEXT,
     expires_at INTEGER

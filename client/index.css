@@ -32,6 +32,30 @@ h1 {
   font-weight: 600;
 }
 
+.app-header {
+  max-width: 1400px;
+  margin: 0 auto 1.5rem;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.app-header h1 {
+  margin: 0;
+  max-width: none;
+}
+
+.current-user {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.current-user a {
+  color: var(--text-muted);
+}
+
 #app {
   max-width: 1400px;
   margin: 0 auto;

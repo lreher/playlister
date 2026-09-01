@@ -1,5 +1,8 @@
 const FindMyWay = require('find-my-way');
 const spotify = require('../sources/spotify');
+const session = require('../sources/session');
+const syncQueue = require('../sources/syncQueue');
+const usersDb = require('../db/users');
 const songsController = require('../controllers/songs');
 const { getQueryParams, sendJson } = require('./utils');
 const { registerStaticRoutes } = require('./static');
@@ -9,73 +12,124 @@ const router = FindMyWay();
 // Register static routes
 registerStaticRoutes(router);
 
-// Only registered when explicitly enabled — these two overwrite the single
-// stored Spotify token row unconditionally, with no per-visitor session to
-// scope that to. Fine on localhost; on a public deploy, anyone who visited
-// /login and completed their own Spotify consent would silently clobber
-// the real stored token. Flip ENABLE_LOGIN on temporarily (one-time login,
-// or whenever the refresh token needs replacing), then back off.
-if (process.env.ENABLE_LOGIN === 'true') {
-  router.on('GET', '/login', (req, res) => {
-    res.writeHead(302, { Location: spotify.getAuthorizeUrl() });
-    res.end();
-  });
-
-  router.on('GET', '/callback', async (req, res) => {
-    const code = getQueryParams(req).get('code');
-    try {
-      await spotify.exchangeCodeForTokens(code);
-      res.writeHead(302, { Location: '/' });
-      res.end();
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end(err.message);
-    }
-  });
-}
-
-router.on('GET', '/api/songs', async (req, res) => {
-  try {
-    const accessToken = await spotify.getValidAccessToken();
-    if (!accessToken) {
+// Every /api/* route requires a real session now — there's no anonymous
+// default library to fall back to any more (each user's data is theirs
+// alone). find-my-way has no middleware chaining, so this just wraps the
+// handler directly.
+function requireSession(handler) {
+  return (req, res, ...rest) => {
+    const userId = session.getSessionUserId(req);
+    if (!userId) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'not_authenticated' }));
       return;
     }
+    return handler(req, res, userId, ...rest);
+  };
+}
 
-    const params = getQueryParams(req);
-    sendJson(
-      res,
-      songsController.getSongs({
-        limit: Math.min(Number(params.get('limit')) || 50, 50),
-        offset: Number(params.get('offset')) || 0,
-        genre: params.get('genre'),
-        year: params.get('year'),
-        decade: params.get('decade'),
-        country: params.get('country'),
-        albumType: params.get('albumType'),
-        artist: params.get('artist'),
-        playlist: params.get('playlist'),
-        durationMin: params.has('durationMin') ? Number(params.get('durationMin')) : null,
-        durationMax: params.has('durationMax') ? Number(params.get('durationMax')) : null,
-        addedFrom: params.get('addedFrom'),
-        addedTo: params.get('addedTo'),
-        popularityMin: params.has('popularityMin') ? Number(params.get('popularityMin')) : null,
-        popularityMax: params.has('popularityMax') ? Number(params.get('popularityMax')) : null,
-      })
-    );
+router.on('GET', '/login', (req, res) => {
+  const state = session.generateState();
+  session.setStateCookie(res, state);
+  res.writeHead(302, { Location: spotify.getAuthorizeUrl(state) });
+  res.end();
+});
+
+router.on('GET', '/callback', async (req, res) => {
+  const params = getQueryParams(req);
+  const code = params.get('code');
+  const state = params.get('state');
+
+  if (!session.verifyState(req, state)) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('Invalid or expired login attempt — please try /login again.');
+    return;
+  }
+
+  try {
+    const { userId } = await spotify.exchangeCodeForTokens(code);
+    session.setSessionCookie(res, userId);
+    usersDb.setSyncStatus(userId, 'syncing');
+    syncQueue.enqueueSync(userId);
+    res.writeHead(302, { Location: '/' });
+    res.end();
   } catch (err) {
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: err.message }));
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end(err.message);
   }
 });
 
-router.on('GET', '/api/filters', (req, res) => {
-  sendJson(res, songsController.getFilterOptions());
+router.on('GET', '/logout', (req, res) => {
+  session.clearSessionCookie(res);
+  res.writeHead(302, { Location: '/' });
+  res.end();
 });
 
-router.on('GET', '/api/stats', (req, res) => {
-  sendJson(res, songsController.getStats());
-});
+router.on(
+  'GET',
+  '/api/me',
+  requireSession((req, res, userId) => {
+    const user = usersDb.getById(userId);
+    sendJson(res, { userId, displayName: user?.displayName ?? null });
+  })
+);
+
+router.on(
+  'GET',
+  '/api/sync-status',
+  requireSession((req, res, userId) => {
+    sendJson(res, usersDb.getSyncStatus(userId));
+  })
+);
+
+router.on(
+  'GET',
+  '/api/songs',
+  requireSession((req, res, userId) => {
+    try {
+      const params = getQueryParams(req);
+      sendJson(
+        res,
+        songsController.getSongs({
+          userId,
+          limit: Math.min(Number(params.get('limit')) || 50, 50),
+          offset: Number(params.get('offset')) || 0,
+          genre: params.get('genre'),
+          year: params.get('year'),
+          decade: params.get('decade'),
+          country: params.get('country'),
+          albumType: params.get('albumType'),
+          artist: params.get('artist'),
+          playlist: params.get('playlist'),
+          durationMin: params.has('durationMin') ? Number(params.get('durationMin')) : null,
+          durationMax: params.has('durationMax') ? Number(params.get('durationMax')) : null,
+          addedFrom: params.get('addedFrom'),
+          addedTo: params.get('addedTo'),
+          popularityMin: params.has('popularityMin') ? Number(params.get('popularityMin')) : null,
+          popularityMax: params.has('popularityMax') ? Number(params.get('popularityMax')) : null,
+        })
+      );
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+  })
+);
+
+router.on(
+  'GET',
+  '/api/filters',
+  requireSession((req, res, userId) => {
+    sendJson(res, songsController.getFilterOptions(userId));
+  })
+);
+
+router.on(
+  'GET',
+  '/api/stats',
+  requireSession((req, res, userId) => {
+    sendJson(res, songsController.getStats(userId));
+  })
+);
 
 module.exports = router;

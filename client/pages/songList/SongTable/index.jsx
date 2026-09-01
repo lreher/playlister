@@ -11,7 +11,6 @@ const COLUMNS = ['Name', 'Artist(s)', 'Album', 'Year', 'Added', 'Country', 'Genr
 export function SongTable({ filters }) {
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState(null);
-  const [unauthenticated, setUnauthenticated] = useState(false);
   const [error, setError] = useState(null);
 
   // A filter change means "start over" — always jump back to the first
@@ -25,30 +24,12 @@ export function SongTable({ filters }) {
     setPage(null);
     setError(null);
     getSongs({ limit: LIMIT, offset, filters })
-      .then((result) => {
-        if (cancelled) return;
-        if (result.unauthenticated) {
-          setUnauthenticated(true);
-        } else {
-          setUnauthenticated(false);
-          setPage(result);
-        }
-      })
+      .then((result) => !cancelled && setPage(result))
       .catch((err) => !cancelled && setError(err.message));
     return () => {
       cancelled = true;
     };
   }, [filters, offset]);
-
-  if (unauthenticated) {
-    return (
-      <div className="login-container">
-        <a className="login-button" href="/login">
-          Login with Spotify
-        </a>
-      </div>
-    );
-  }
 
   if (error) return <div>Error: {error}</div>;
   if (!page) return <div>Loading...</div>;

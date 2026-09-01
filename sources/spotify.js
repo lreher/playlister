@@ -1,16 +1,18 @@
 const tokens = require('../db/tokens');
+const users = require('../db/users');
 
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 const REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI;
 const SCOPE = 'user-library-read playlist-read-private playlist-read-collaborative';
 
-function getAuthorizeUrl() {
+function getAuthorizeUrl(state) {
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
     response_type: 'code',
     redirect_uri: REDIRECT_URI,
     scope: SCOPE,
+    state,
   });
   return `https://accounts.spotify.com/authorize?${params.toString()}`;
 }
@@ -19,6 +21,20 @@ function basicAuthHeader() {
   return 'Basic ' + Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
 }
 
+async function fetchProfile(accessToken) {
+  const res = await fetch('https://api.spotify.com/v1/me', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    throw new Error(`Spotify profile fetch failed: ${res.status} ${await res.text()}`);
+  }
+  const data = await res.json();
+  return { id: data.id, displayName: data.display_name ?? null };
+}
+
+// Exchanges the OAuth code, then resolves *who* just logged in (Spotify's
+// own user id) so the caller can set up a session — this app has no
+// separate account system, Spotify's own identity IS the login.
 async function exchangeCodeForTokens(code) {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
@@ -40,14 +56,19 @@ async function exchangeCodeForTokens(code) {
   }
 
   const data = await res.json();
-  tokens.set({
+  const profile = await fetchProfile(data.access_token);
+
+  users.upsert({ id: profile.id, displayName: profile.displayName });
+  tokens.set(profile.id, {
     access_token: data.access_token,
     refresh_token: data.refresh_token,
     expires_at: Date.now() + data.expires_in * 1000,
   });
+
+  return { userId: profile.id, displayName: profile.displayName };
 }
 
-async function refreshAccessToken(refreshToken) {
+async function refreshAccessToken(userId, refreshToken) {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
@@ -67,7 +88,7 @@ async function refreshAccessToken(refreshToken) {
   }
 
   const data = await res.json();
-  tokens.set({
+  tokens.set(userId, {
     access_token: data.access_token,
     // Spotify may omit refresh_token on refresh; keep the old one if so.
     refresh_token: data.refresh_token || refreshToken,
@@ -77,15 +98,15 @@ async function refreshAccessToken(refreshToken) {
   return data.access_token;
 }
 
-async function getValidAccessToken() {
-  const current = tokens.get();
+async function getValidAccessToken(userId) {
+  const current = tokens.get(userId);
   if (!current) return null;
 
   if (Date.now() < current.expires_at) {
     return current.access_token;
   }
 
-  return refreshAccessToken(current.refresh_token);
+  return refreshAccessToken(userId, current.refresh_token);
 }
 
 async function getLikedSongsPage(accessToken, { limit, offset }) {

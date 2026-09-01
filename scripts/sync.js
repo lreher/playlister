@@ -7,6 +7,7 @@ const isrcCountry = require('../utils/isrcCountry');
 const songsDb = require('../db/songs');
 const artistsDb = require('../db/artists');
 const playlistsDb = require('../db/playlists');
+const usersDb = require('../db/users');
 
 const MB_BATCH_SIZE = 15;
 const MB_REQUEST_DELAY_MS = 1100;
@@ -47,15 +48,29 @@ function createCircuitBreaker(threshold) {
 // Liked Songs
 // ---------------------------------------------------------------------------
 
+// This user's own already-recorded Liked Songs, from their pseudo-playlist —
+// NOT a global lookup. `songs` itself is a shared cache across every user,
+// so "does this song ID exist anywhere" is no longer the right question:
+// syncSongs()'s incremental stop-early check must be scoped to what *this*
+// user has already synced, or a brand-new user's walk could stop the moment
+// it hits some other user's already-cached song, silently truncating their
+// own history (see syncSongs' comment below).
+function getUserLikedSongIds(userId) {
+  const likedSongs = playlistsDb.getById(userId, playlistsDb.likedSongsId(userId));
+  return new Set(likedSongs ? likedSongs.tracks.map((t) => t.id) : []);
+}
+
 // Spotify's saved-tracks endpoint returns items newest-first, so this can
-// stop paginating the moment it hits a track already stored — everything
-// after that point is already known. On first run (empty db) this naturally
-// walks the entire library.
-//
-// Known limitation: only detects additions, not removals — if you unlike a
-// song it stays stored until manually cleaned up.
-async function syncSongs(accessToken) {
-  const existingIds = new Set(songsDb.getAll().map((s) => s.id));
+// stop paginating the moment it hits a track this *user* already has
+// recorded — everything after that point is already known to them. Scoped
+// to the user's own Liked-Songs membership rather than the global `songs`
+// table: `songs` is a shared cache now, so a song being globally known
+// (synced by some other user) says nothing about whether *this* user has
+// walked past it yet. On a user's first-ever sync their own scope starts
+// empty, so this naturally walks their entire library, same as the old
+// single-tenant behavior did on a first run.
+async function syncSongs(accessToken, userId) {
+  const existingIds = getUserLikedSongIds(userId);
   const rawNewItems = [];
   let url = 'https://api.spotify.com/v1/me/tracks?limit=50';
   let reachedKnown = false;
@@ -79,7 +94,7 @@ async function syncSongs(accessToken) {
   }
 
   const newSongs = songsDb.mergeTracks(rawNewItems);
-  console.log(`[songs] sync complete: ${newSongs.length} new songs (${songsDb.getAll().length} total)`);
+  console.log(`[songs] sync complete: ${newSongs.length} new songs for this user`);
   return newSongs;
 }
 
@@ -144,20 +159,22 @@ async function fetchAllLikedTrackIds(accessToken) {
   return tracks;
 }
 
-// Syncs every playlist the user owns or follows, plus a "liked-songs"
+// Syncs every playlist this user owns or follows, plus a "liked-songs"
 // pseudo-playlist entry (so Liked Songs shows up in the same Playlist
 // filter as real playlists). Real playlists are reconciled via
 // `snapshot_id`: unchanged since last sync -> skipped entirely (no
-// requests spent), changed or new -> full track list re-fetched and any
-// new tracks merged into songs. Playlists no longer returned by Spotify
-// (deleted/unfollowed) are removed from storage too.
+// requests), changed or new -> full track list re-fetched and any new
+// tracks merged into songs. Playlists no longer returned by Spotify
+// (deleted/unfollowed) are removed from this user's own list only — see
+// db/playlists.js's set() for why that's scoped per-user, not a blanket
+// wipe.
 //
 // `newLikedSongs` is whatever syncSongs() just discovered this run — the
 // liked-songs pseudo-playlist is updated append-only from that (same
 // "detects additions, not removals" limitation as songs storage itself),
 // unlike real playlists which get correct full reconciliation.
-async function syncPlaylists(accessToken, newLikedSongs) {
-  const existing = playlistsDb.getAll();
+async function syncPlaylists(userId, accessToken, newLikedSongs) {
+  const existing = playlistsDb.getAll(userId);
   const existingById = new Map(existing.map((p) => [p.id, p]));
 
   const remotePlaylists = await fetchAllPlaylists(accessToken);
@@ -189,17 +206,17 @@ async function syncPlaylists(accessToken, newLikedSongs) {
     });
   }
 
-  let likedSongs = existingById.get(playlistsDb.LIKED_SONGS_ID);
+  const likedSongsId = playlistsDb.likedSongsId(userId);
+  let likedSongs = existingById.get(likedSongsId);
 
   if (!likedSongs) {
-    // First time this feature has run: songs storage may already hold
-    // liked songs synced before playlists existed, and syncSongs()'s
-    // incremental check only reports *newly*-discovered ones. Seed the
+    // First time this user has synced: their liked songs may span more
+    // history than syncSongs()'s incremental walk just reported. Seed the
     // pseudo-playlist with a one-time full walk so it starts accurate,
     // rather than silently starting from zero.
     console.log('[playlists] seeding Liked Songs pseudo-playlist (one-time full walk)');
     likedSongs = {
-      id: playlistsDb.LIKED_SONGS_ID,
+      id: likedSongsId,
       name: 'Liked Songs',
       ownerName: null,
       public: false,
@@ -215,13 +232,14 @@ async function syncPlaylists(accessToken, newLikedSongs) {
   }
   updated.unshift(likedSongs);
 
-  playlistsDb.set(updated);
+  playlistsDb.set(userId, updated);
   console.log(`[playlists] sync complete: ${changedCount}/${remotePlaylists.length} playlists refreshed`);
 }
 
 // ---------------------------------------------------------------------------
 // Artist country resolution (MusicBrainz -> Wikidata -> ISRC), cheapest and
-// most-accurate source first
+// most-accurate source first. Fully global — shared across every user, no
+// userId involved at all.
 // ---------------------------------------------------------------------------
 
 // MusicBrainz batched search -> MusicBrainz per-artist fallback lookup
@@ -230,8 +248,8 @@ async function syncPlaylists(accessToken, newLikedSongs) {
 // is the full roster (artistsDb.getAll() — every artist has a row by the
 // time this runs, since db/songs.js's mergeTracks stub-creates one for
 // each artist as songs come in) — only ones previously left unresolved
-// actually get queried; anything already resolved is skipped, so this is
-// cheap to re-run on every sync.
+// actually get queried; anything already resolved (by any user's prior
+// sync) is skipped, so this is cheap to re-run every time.
 async function resolveCountries(artistList) {
   const toResolve = artistList.filter((a) => a.country === null);
 
@@ -384,7 +402,8 @@ async function resolveCountries(artistList) {
 // For any artist still unresolved, scans every one of their tracks already
 // stored (not just whichever one happens to be on the page you're
 // viewing) for a resolvable ISRC country. Purely local — no Spotify call —
-// since songs already carry each track's ISRC.
+// since songs already carry each track's ISRC. Global, same as the rest of
+// artist resolution.
 function resolveIsrcFallback() {
   let recovered = 0;
 
@@ -405,7 +424,10 @@ function resolveIsrcFallback() {
 
 // ---------------------------------------------------------------------------
 // Spotify genres/popularity/followers (requires the grandfathered pre-Nov-
-// 2024 app — see playlister_focus.md)
+// 2024 app — see playlister_focus.md). Global, same as the rest of artist
+// resolution — any user's access token works equally well here, since this
+// restriction is gated by which Spotify app is used, not which user's token
+// calls it.
 // ---------------------------------------------------------------------------
 
 // One-time pass, batched 50 artist IDs/request via Spotify's own artist
@@ -464,34 +486,92 @@ async function resolveArtistDetails(accessToken) {
 // Orchestration
 // ---------------------------------------------------------------------------
 
-async function main() {
-  const accessToken = await spotify.getValidAccessToken();
+// Split from enrichment on purpose: this half is bounded by Spotify
+// pagination speed alone (no artificial delay anywhere in it), while
+// resolveCountries/resolveArtistDetails below are deliberately
+// rate-limited against external services outside our control (MusicBrainz,
+// Wikidata) and can run for minutes against a brand-new user's never-
+// before-seen artists. sources/syncQueue.js flips a user's sync_status to
+// 'done' — unblocking the UI — right after this returns, without waiting
+// on enrichment at all. Returns the access token so the caller can hand it
+// to runEnrichment without a second token lookup.
+async function runFastSync(userId) {
+  const accessToken = await spotify.getValidAccessToken(userId);
   if (!accessToken) {
-    console.error('Not logged in — start the server (npm start) and log in via /login first.');
-    process.exit(1);
+    throw new Error(`No valid Spotify token for user ${userId}`);
   }
 
-  console.log('== Syncing liked songs ==');
-  const newLikedSongs = await syncSongs(accessToken);
+  console.log(`== Syncing liked songs (user ${userId}) ==`);
+  const newLikedSongs = await syncSongs(accessToken, userId);
 
   console.log('== Syncing playlists ==');
-  await syncPlaylists(accessToken, newLikedSongs);
+  await syncPlaylists(userId, accessToken, newLikedSongs);
 
+  // Local only, no network — cheap enough to run inline here rather than
+  // deferring it to the slow phase.
+  resolveIsrcFallback();
+
+  return accessToken;
+}
+
+// The slow half — global artist enrichment, not scoped to any one user's
+// login. `accessToken` just needs to be *some* currently-valid token (the
+// genre/popularity/batch-endpoint access this depends on is gated by which
+// Spotify app is used, not which user's token calls it — see
+// playlister_focus.md's Spotify API findings), so the caller's own token
+// from runFastSync is reused rather than looking up another one.
+async function runEnrichment(accessToken) {
   console.log('== Resolving artist countries ==');
   // Every artist already has a row by this point — db/songs.js's
   // mergeTracks stub-creates one for each artist as songs come in, so the
-  // full roster is just whatever's in the table (no need to separately
-  // derive it from songs, unlike the old JSON-era code).
+  // full roster is just whatever's in the (global) table.
   await resolveCountries(artistsDb.getAll());
-  resolveIsrcFallback();
 
   console.log('== Resolving artist genres/popularity ==');
   await resolveArtistDetails(accessToken);
 
+  console.log('== Enrichment complete ==');
+}
+
+// Runs both phases back-to-back, synchronously — used by the manual CLI
+// entry point below, where waiting for the whole thing is expected. The
+// server-triggered path (sources/syncQueue.js) calls runFastSync and
+// runEnrichment separately instead, on two independent queues.
+async function runFullSync(userId) {
+  const accessToken = await runFastSync(userId);
+  await runEnrichment(accessToken);
   console.log('== Sync complete ==');
 }
 
-main().catch((err) => {
-  console.error('Sync failed:', err.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  const userId = process.argv[2];
+  if (!userId) {
+    const known = usersDb.getAll();
+    console.error('Usage: node scripts/sync.js <spotifyUserId>');
+    if (known.length > 0) {
+      console.error('Known users:');
+      known.forEach((u) => console.error(`  ${u.id}${u.displayName ? ` (${u.displayName})` : ''}`));
+    } else {
+      console.error('No users have logged in yet.');
+    }
+    process.exit(1);
+  }
+
+  runFullSync(userId)
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error('Sync failed:', err.message);
+      process.exit(1);
+    });
+}
+
+module.exports = {
+  runFullSync,
+  runFastSync,
+  runEnrichment,
+  syncSongs,
+  syncPlaylists,
+  resolveCountries,
+  resolveIsrcFallback,
+  resolveArtistDetails,
+};

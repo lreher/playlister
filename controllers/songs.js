@@ -16,25 +16,45 @@ const GENRES_SUBQUERY = `(
   JOIN artist_genres ag ON ag.artist_id = sa.artist_id WHERE sa.song_id = sd.id
 )`;
 
-// Builds a parameterized WHERE clause from getSongs()'s filter object.
-// Every field optional/nullable — omit a filter to not apply it. Genre and
-// artist are EXISTS subqueries (a song can match on any of its artists,
-// not just the primary one — genre is a many-valued union across them).
-function buildWhere({
-  genre,
-  year,
-  decade,
-  country,
-  albumType,
-  artist,
-  playlist,
-  durationMin,
-  durationMax,
-  addedFrom,
-  addedTo,
-  popularityMin,
-  popularityMax,
-}) {
+// `artists`/`songs`/`song_artists`/`artist_genres` are a shared cache across
+// every user (see playlister_focus.md's "Data layer" section) — a song or
+// artist's own metadata doesn't depend on who's browsing. What's user-
+// specific is *membership*: a song only belongs to a user's library if it's
+// in one of their playlists (including their own Liked Songs pseudo-
+// playlist). Every read in this file goes through this same check, applied
+// to whichever id column that particular query's FROM clause exposes.
+function visibleToUser(songIdColumn) {
+  return `EXISTS (
+    SELECT 1 FROM playlist_tracks pt
+    JOIN playlists pl ON pl.id = pt.playlist_id
+    WHERE pt.song_id = ${songIdColumn} AND pl.user_id = ?
+  )`;
+}
+
+// Builds a parameterized WHERE clause from getSongs()'s filter object, plus
+// the mandatory per-user visibility check (always applied, not just when an
+// explicit filter is set — this is what actually scopes "all songs" to
+// "your songs"). Genre and artist are EXISTS subqueries (a song can match
+// on any of its artists, not just the primary one — genre is a many-valued
+// union across them).
+function buildWhere(
+  {
+    genre,
+    year,
+    decade,
+    country,
+    albumType,
+    artist,
+    playlist,
+    durationMin,
+    durationMax,
+    addedFrom,
+    addedTo,
+    popularityMin,
+    popularityMax,
+  },
+  userId
+) {
   const clauses = [];
   const params = [];
 
@@ -67,8 +87,14 @@ function buildWhere({
     params.push(artist);
   }
   if (playlist) {
-    clauses.push('EXISTS (SELECT 1 FROM playlist_tracks pt WHERE pt.playlist_id = ? AND pt.song_id = sd.id)');
-    params.push(playlist);
+    // Joins through playlists (not just a bare playlist_tracks check) and
+    // scopes to this user: the same real playlist_id can now legitimately
+    // belong to more than one user's own `playlists` row (composite PK),
+    // so an unscoped check here would be a cross-tenant leak vector.
+    clauses.push(
+      'EXISTS (SELECT 1 FROM playlist_tracks pt JOIN playlists pl ON pl.id = pt.playlist_id WHERE pt.playlist_id = ? AND pl.user_id = ? AND pt.song_id = sd.id)'
+    );
+    params.push(playlist, userId);
   }
   if (durationMin != null) {
     clauses.push('sd.duration_ms >= ?');
@@ -98,7 +124,10 @@ function buildWhere({
     params.push(popularityMax);
   }
 
-  return { where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
+  clauses.push(visibleToUser('sd.id'));
+  params.push(userId);
+
+  return { where: `WHERE ${clauses.join(' AND ')}`, params };
 }
 
 function rowToSong(row) {
@@ -121,10 +150,10 @@ function rowToSong(row) {
   };
 }
 
-// Filters, sorts (newest-added first), and paginates the local song
-// snapshot via real SQL against the song_details view.
-function getSongs({ limit = 50, offset = 0, ...filters } = {}) {
-  const { where, params } = buildWhere(filters);
+// Filters, sorts (newest-added first), and paginates the calling user's own
+// visible songs via real SQL against the song_details view.
+function getSongs({ userId, limit = 50, offset = 0, ...filters }) {
+  const { where, params } = buildWhere(filters, userId);
 
   const { count: total } = db.prepare(`SELECT COUNT(*) AS count FROM song_details sd ${where}`).get(...params);
 
@@ -143,39 +172,54 @@ function getSongs({ limit = 50, offset = 0, ...filters } = {}) {
 }
 
 // Distinct filter option lists + ranges, for populating the List tab's
-// dropdowns/sliders. Genres/artists are scoped to ones that actually
-// appear on a song (via song_artists), same as the old per-song union.
-function getFilterOptions() {
+// dropdowns/sliders — scoped to the calling user's own visible songs, same
+// as getSongs, so these never reveal another user's library composition
+// (which genres/artists/countries exist elsewhere in the system) even
+// though individual song rows already stay hidden.
+function getFilterOptions(userId) {
   const genres = db
-    .prepare('SELECT DISTINCT ag.genre FROM artist_genres ag JOIN song_artists sa ON sa.artist_id = ag.artist_id ORDER BY ag.genre')
-    .all()
+    .prepare(
+      `SELECT DISTINCT ag.genre FROM artist_genres ag JOIN song_artists sa ON sa.artist_id = ag.artist_id
+       WHERE ${visibleToUser('sa.song_id')} ORDER BY ag.genre`
+    )
+    .all(userId)
     .map((r) => r.genre);
   const years = db
-    .prepare('SELECT DISTINCT year FROM song_details WHERE year IS NOT NULL ORDER BY year DESC')
-    .all()
+    .prepare(`SELECT DISTINCT year FROM song_details sd WHERE year IS NOT NULL AND ${visibleToUser('sd.id')} ORDER BY year DESC`)
+    .all(userId)
     .map((r) => r.year);
   const decades = db
-    .prepare('SELECT DISTINCT decade FROM song_details WHERE decade IS NOT NULL ORDER BY decade DESC')
-    .all()
+    .prepare(`SELECT DISTINCT decade FROM song_details sd WHERE decade IS NOT NULL AND ${visibleToUser('sd.id')} ORDER BY decade DESC`)
+    .all(userId)
     .map((r) => r.decade);
   const countries = db
-    .prepare('SELECT DISTINCT country FROM song_details WHERE country IS NOT NULL ORDER BY country')
-    .all()
+    .prepare(`SELECT DISTINCT country FROM song_details sd WHERE country IS NOT NULL AND ${visibleToUser('sd.id')} ORDER BY country`)
+    .all(userId)
     .map((r) => r.country);
   const albumTypes = db
-    .prepare('SELECT DISTINCT album_type FROM songs WHERE album_type IS NOT NULL ORDER BY album_type')
-    .all()
+    .prepare(`SELECT DISTINCT album_type FROM songs s WHERE album_type IS NOT NULL AND ${visibleToUser('s.id')} ORDER BY album_type`)
+    .all(userId)
     .map((r) => r.album_type);
   const artists = db
-    .prepare('SELECT DISTINCT a.name FROM song_artists sa JOIN artists a ON a.id = sa.artist_id ORDER BY a.name')
-    .all()
+    .prepare(
+      `SELECT DISTINCT a.name FROM song_artists sa JOIN artists a ON a.id = sa.artist_id
+       WHERE ${visibleToUser('sa.song_id')} ORDER BY a.name`
+    )
+    .all(userId)
     .map((r) => r.name);
 
-  const durationRange = db.prepare('SELECT MIN(duration_ms) AS min, MAX(duration_ms) AS max FROM songs').get();
-  const addedRange = db.prepare('SELECT MIN(added_at) AS min, MAX(added_at) AS max FROM songs').get();
+  const durationRange = db
+    .prepare(`SELECT MIN(duration_ms) AS min, MAX(duration_ms) AS max FROM songs s WHERE ${visibleToUser('s.id')}`)
+    .get(userId);
+  const addedRange = db
+    .prepare(`SELECT MIN(added_at) AS min, MAX(added_at) AS max FROM songs s WHERE ${visibleToUser('s.id')}`)
+    .get(userId);
   const popularityRange = db
-    .prepare('SELECT MIN(artist_popularity) AS min, MAX(artist_popularity) AS max FROM song_details WHERE artist_popularity IS NOT NULL')
-    .get();
+    .prepare(
+      `SELECT MIN(artist_popularity) AS min, MAX(artist_popularity) AS max FROM song_details sd
+       WHERE artist_popularity IS NOT NULL AND ${visibleToUser('sd.id')}`
+    )
+    .get(userId);
 
   return {
     genres,
@@ -187,34 +231,48 @@ function getFilterOptions() {
     durationRange,
     addedRange,
     popularityRange,
-    playlists: playlists.getAll().map((p) => ({ id: p.id, name: p.name, trackCount: p.tracks.length })),
+    playlists: playlists.getAll(userId).map((p) => ({ id: p.id, name: p.name, trackCount: p.tracks.length })),
   };
 }
 
-// Pre-aggregated counts for the Dashboards tab's charts, via GROUP BY.
-function getStats() {
+// Pre-aggregated counts for the Dashboards tab's charts, via GROUP BY —
+// scoped to the calling user's own visible songs, same reasoning as
+// getFilterOptions.
+function getStats(userId) {
   const yearCounts = db
-    .prepare('SELECT year, COUNT(*) AS count FROM song_details WHERE year IS NOT NULL GROUP BY year ORDER BY year')
-    .all();
+    .prepare(
+      `SELECT year, COUNT(*) AS count FROM song_details sd
+       WHERE year IS NOT NULL AND ${visibleToUser('sd.id')} GROUP BY year ORDER BY year`
+    )
+    .all(userId);
   const decadeCounts = db
-    .prepare('SELECT decade, COUNT(*) AS count FROM song_details WHERE decade IS NOT NULL GROUP BY decade ORDER BY decade')
-    .all();
+    .prepare(
+      `SELECT decade, COUNT(*) AS count FROM song_details sd
+       WHERE decade IS NOT NULL AND ${visibleToUser('sd.id')} GROUP BY decade ORDER BY decade`
+    )
+    .all(userId);
   const popularityCounts = db
     .prepare(
       `SELECT (CAST(artist_popularity / 10 AS INTEGER) * 10) || '-' || (CAST(artist_popularity / 10 AS INTEGER) * 10 + 9) AS bucket,
               COUNT(*) AS count
-       FROM song_details
-       WHERE artist_popularity IS NOT NULL
+       FROM song_details sd
+       WHERE artist_popularity IS NOT NULL AND ${visibleToUser('sd.id')}
        GROUP BY CAST(artist_popularity / 10 AS INTEGER)
        ORDER BY CAST(artist_popularity / 10 AS INTEGER)`
     )
-    .all();
+    .all(userId);
   const countryCounts = db
-    .prepare('SELECT country AS code, COUNT(*) AS count FROM song_details WHERE country IS NOT NULL GROUP BY country ORDER BY count DESC')
-    .all();
+    .prepare(
+      `SELECT country AS code, COUNT(*) AS count FROM song_details sd
+       WHERE country IS NOT NULL AND ${visibleToUser('sd.id')} GROUP BY country ORDER BY count DESC`
+    )
+    .all(userId);
   const likedCounts = db
-    .prepare("SELECT substr(added_at, 1, 7) AS month, COUNT(*) AS count FROM songs GROUP BY month ORDER BY month")
-    .all();
+    .prepare(
+      `SELECT substr(added_at, 1, 7) AS month, COUNT(*) AS count FROM songs s
+       WHERE ${visibleToUser('s.id')} GROUP BY month ORDER BY month`
+    )
+    .all(userId);
 
   return { yearCounts, decadeCounts, popularityCounts, countryCounts, likedCounts };
 }
