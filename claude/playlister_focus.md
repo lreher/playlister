@@ -573,6 +573,26 @@ real account, zero prior data) to exercise the whole pipeline end to end.
   and runs `ALTER TABLE ... ADD COLUMN` for whatever's missing, every time it's required —
   safe, idempotent, self-healing on both fresh installs and the two already-live databases.
 
+## Multi-tenancy: two more bugs found via the real second-user run (Aug 31 2026)
+
+- **Genres/popularity were gated behind country resolution for no real reason.**
+  `runEnrichment` ran `resolveCountries` (rate-limited against MusicBrainz/Wikidata,
+  hours on a cold cache) before `resolveArtistDetails` (Spotify's own batch endpoint —
+  thousands of artists in well under a minute). Fully independent operations, so there
+  was no reason for the fast one to sit at zero the whole time the slow one worked
+  through a large backlog. **Caught by Lucas actually looking at the result**, not
+  something review would have flagged — swapped the order.
+- **Sync-progress polling looked "stuck at 100%," fixed by a page refresh.** Verified via
+  direct server inspection (not guesswork) that the backend had genuinely already
+  finished (`sync_status: 'done'`) by the time this was reported — the frontend's
+  `setTimeout`-chained poll loop just never got back to it. Leading theory: browser tabs
+  throttle `setTimeout` hard once backgrounded/minimized — the loop doesn't die, it just
+  slows to a crawl, which looks identical to "stuck" until something re-triggers a fresh
+  check (a reload, in this case). Fixed with a `visibilitychange` listener in `App.jsx`
+  that immediately re-polls the moment the tab becomes visible again, rather than relying
+  on whatever's left of a throttled timer — a reasonable robustness improvement
+  regardless of whether backgrounding was the exact cause here.
+
 ## Spotify API — hard-won findings
 
 - **Two Spotify Developer apps are in play.** The current `.env` credentials are for the

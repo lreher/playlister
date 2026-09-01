@@ -46,6 +46,7 @@ export function App() {
   useEffect(() => {
     if (status !== 'checking-sync') return;
     let cancelled = false;
+    let timer = null;
 
     function poll() {
       getSyncStatus()
@@ -58,15 +59,30 @@ export function App() {
             setStatus('sync-error');
           } else {
             setSyncProgress(result.progress);
-            setTimeout(poll, SYNC_POLL_MS);
+            timer = setTimeout(poll, SYNC_POLL_MS);
           }
         })
         .catch(() => !cancelled && setStatus('unauthenticated'));
     }
     poll();
 
+    // Chained setTimeout gets throttled hard by the browser once a tab is
+    // backgrounded/minimized — doesn't die, just slows to a crawl, which
+    // looks exactly like "stuck at 100%" until you switch back. Re-poll
+    // immediately the moment the tab is visible again, rather than waiting
+    // for whatever's left of a throttled interval.
+    function handleVisibility() {
+      if (document.visibilityState === 'visible') {
+        if (timer) clearTimeout(timer);
+        poll();
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [status]);
 

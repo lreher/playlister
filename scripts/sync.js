@@ -530,14 +530,21 @@ async function runFastSync(userId) {
 // playlister_focus.md's Spotify API findings), so the caller's own token
 // from runFastSync is reused rather than looking up another one.
 async function runEnrichment(accessToken) {
+  // Genres/popularity first, deliberately — Spotify's own batch endpoint
+  // resolves thousands of artists in well under a minute, while
+  // resolveCountries below is rate-limited against MusicBrainz/Wikidata and
+  // can run for hours on a cold cache. Countries used to run first, which
+  // meant genres/popularity sat at zero the whole time countries were
+  // still working through a large backlog, even though they're completely
+  // independent and could have shown up almost immediately.
+  console.log('== Resolving artist genres/popularity ==');
+  await resolveArtistDetails(accessToken);
+
   console.log('== Resolving artist countries ==');
   // Every artist already has a row by this point — db/songs.js's
   // mergeTracks stub-creates one for each artist as songs come in, so the
   // full roster is just whatever's in the (global) table.
   await resolveCountries(artistsDb.getAll());
-
-  console.log('== Resolving artist genres/popularity ==');
-  await resolveArtistDetails(accessToken);
 
   console.log('== Enrichment complete ==');
 }
