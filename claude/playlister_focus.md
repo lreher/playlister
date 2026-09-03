@@ -43,7 +43,7 @@ times, e.g. from both the server and `scripts/sync.js`):
 artists(id PK, name, country, popularity, followers, details_resolved)
 artist_genres(artist_id, genre)                         -- many-valued
 songs(id PK, name, album_name, album_release_date, album_type,
-      added_at, isrc, duration_ms, explicit, spotify_url)
+      isrc, duration_ms, explicit, spotify_url)   -- added_at dropped Sep 2026, see "Per-user 'Added' date"
 song_artists(song_id, artist_id, position)                -- position 0 = primary
 playlists(id PK, name, owner_name, public, collaborative, snapshot_id)
 playlist_tracks(playlist_id, song_id, added_at)
@@ -372,23 +372,28 @@ architectural decision would be.
 
 - Each playlist has a **`snapshot_id`** that changes whenever its contents change — used
   for correct incremental sync: unchanged since last sync → skipped entirely (no
-  requests), changed/new → full track list re-fetched. Unlike Liked Songs' "stop at first
-  known ID" trick, this correctly detects removals too, not just additions.
+  requests), changed/new → full track list re-fetched, detecting removals too. Liked
+  Songs has no `snapshot_id`, so it's treated as a permanently-"changed" playlist:
+  full-walked and whole-replaced every sync (see "Per-user 'Added' date", Sep 2026 — the
+  old "stop at first known ID" incremental trick is gone).
 - Requires `playlist-read-private` + `playlist-read-collaborative` scopes (added to
   `sources/spotify.js`) — **this scope change mattered in practice, not just in theory**: the
   endpoint returned data even without the scope during initial testing (33 playlists,
   all public), but after re-authenticating with the proper scope it found **47** — 14
   private playlists had been silently invisible. Don't skip adding a scope just because
   something appears to work without it.
-- **Real bug hit and fixed**: the "liked-songs" pseudo-playlist entry was first
-  implemented as append-only from `syncSongs()`'s newly-discovered-this-run list. Since
-  Liked Songs had already been fully synced in earlier sessions before this feature
-  existed, the first run under the new code found 0 *new* songs and the pseudo-playlist
-  silently ended up with **0 tracks** instead of the real ~5032. Fixed by detecting "this
-  pseudo-playlist doesn't exist yet" and doing a one-time full walk of `/v1/me/tracks` to
-  seed it correctly, before switching to incremental appends. Worth remembering: any
+- **Real bug hit and fixed** (history — the append-only design it describes is gone as of
+  Sep 2026, replaced by the unconditional full-walk above): the "liked-songs"
+  pseudo-playlist entry was first implemented as append-only from `syncSongs()`'s
+  newly-discovered-this-run list. Since Liked Songs had already been fully synced in
+  earlier sessions before this feature existed, the first run under the new code found 0
+  *new* songs and the pseudo-playlist silently ended up with **0 tracks** instead of the
+  real ~5032. That got patched with a one-time full-seed path — which then had its own
+  follow-on bugs (per-user-vs-global "new", the `liked-songs-seed` stall) until the whole
+  append-only approach was dropped for a plain whole-replace. Worth remembering: any
   "derive current membership from an incremental/append-only sync" design needs an
-  explicit first-time full-seed path, or it silently starts from empty.
+  explicit first-time full-seed path, or it silently starts from empty — or just
+  full-reconcile every time if the walk is affordable, which it turned out to be here.
 - Playlist membership lives on the **playlist** (the `playlist_tracks` table), not the
   song — deliberately, so the `songs` table stays structurally untouched by this feature.
 
@@ -464,6 +469,11 @@ library than the user actually has. Fixed by scoping the stop-early check to *th
 user's own* Liked-Songs membership (`getUserLikedSongIds(userId)`) instead of the global
 table — correctly walks a brand-new user's full history on first sync (their own scope
 starts empty) while still skipping redundant work on later re-syncs.
+
+> **Superseded (Sep 3 2026)**: the per-user stop-early is gone entirely — `syncSongs` now
+> full-walks Liked Songs every sync (see "Per-user 'Added' date"). The class of bug above
+> (membership derived from an incremental walk against a shared cache) is what motivated
+> dropping it.
 
 **Background sync**: no queue library — 25-user Development-Mode cap, one
 systemd-managed process, a real job queue would be more machinery than this warrants.
@@ -619,6 +629,76 @@ pseudo-playlist) and confirming progress moves continuously — 0 → 850 → 17
 only ever fires once per user (first sync only); a returning user's re-sync never hits
 this code path at all.
 
+> **Superseded (Sep 3 2026)** by "Per-user 'Added' date" below: `syncSongs` now always
+> full-walks Liked Songs, so the separate `fetchAllLikedTrackIds` seed path and its
+> `liked-songs-seed` phase are gone — that walk is now just part of the `songs` phase,
+> every sync.
+
+## Per-user "Added" date — Liked Songs is now a real reconciled playlist (Sep 3 2026)
+
+**Bug, hit live on the deployed app by real second/third users** (not synthetic testing):
+everyone's List order, added-date range filter, and the "liked over time" dashboard chart
+were keyed off **Lucas's** like dates, not their own. Root cause: `songs.added_at` was a
+single global column, written once by `mergeTracks` when a track first entered the DB for
+*anyone* and never updated — a leftover from the single-tenant era when "when was this
+added" had one answer. Every read in `controllers/songs.js` (`getSongs`'s sort, the
+`addedFrom`/`addedTo` filter, `getFilterOptions`'s `addedRange`, `getStats`'s
+`likedCounts`) read that global column.
+
+**The per-user date already existed in the DB** — `playlist_tracks.added_at`, scoped per
+user through `playlists` (each user's Liked Songs under `playlist_id =
+liked-songs:<userId>`, seeded with their own dates on first sync). So this was a
+read-layer bug, *not* missing data — and explicitly **not** a reason to duplicate song
+rows per user (the shared `songs`/`artists` cache is still the right call — see
+"Multi-tenancy" above; the only user-specific field in play was `added_at`, already on
+the membership layer).
+
+**What changed:**
+- **`songs.added_at` dropped entirely** (schema + `song_details` view + `idx_songs_added_at`).
+  One-time migration `scripts/migrate-drop-songs-added-at.js` (`npm run migrate-drop-added-at`),
+  idempotent via a `PRAGMA table_info` guard: drops view → index → column, then lets
+  `db/database.js` recreate the view. `mergeTracks` no longer writes the column; it
+  ignores each item's `added_at` (a per-user fact, recorded on `playlist_tracks` by the
+  caller).
+- **`controllers/songs.js` derives "Added" per-user**: `MIN(added_at)` across the calling
+  user's own `playlist_tracks` rows for that song — the earliest date it entered *any* of
+  their playlists (their Liked Songs among them). Two correlated forms: `USER_ADDED_AT_SUBQUERY`
+  (attached to a `song_details` row for `getSongs`' sort + range filter, one `?` = userId)
+  and `USER_ADDED_AT_ROWS` (a standalone one-row-per-song source for `addedRange` /
+  `likedCounts`, where membership *is* the FROM clause so no `visibleToUser` needed).
+  `visibleToUser` itself was left untouched — it's the verified security boundary, and
+  the new subqueries scope redundantly on top of it rather than replacing it.
+- **Liked Songs is now reconciled like a snapshot-less playlist.** `syncSongs` always
+  full-walks `/v1/me/tracks` (no more per-user incremental stop-early), feeds every item
+  to `mergeTracks` (populates the shared `songs` cache, dedupes cheaply), and returns the
+  full `[{id, addedAt}]` list. `syncPlaylists` whole-replaces the pseudo-playlist from
+  that list — same path as any real playlist with no `snapshot_id` match. **Deleted**:
+  `fetchAllLikedTrackIds`, `getUserLikedSongIds`, the first-sync seed branch, the
+  append-only branch, the `liked-songs-seed` progress phase. This also fixes a latent
+  bug: a song you newly like that another user already synced used to be dropped from
+  your Liked Songs, because membership was derived from what `mergeTracks` found
+  *globally* new, not what was new *to you*.
+
+**Tradeoff accepted:** every sync now re-walks ~100 pages of Liked Songs instead of
+stopping early. That was a real rate-limit problem once — but back when a full walk fired
+on every *server restart* during development. Sync is per-login now (25-user cap), so a
+full walk per sync is fine. Easy follow-up if it ever bites: only full-walk when the last
+sync was more than N hours ago.
+
+**Verified** (local, `data/playlister.db` backed up first): Lucas's own numbers unchanged
+post-migration (6218 songs, all filter-option lengths/ranges, all stats lengths identical;
+`likedCounts` last month shifted 107→106, the one intentional correctness change — a song
+whose earliest membership month differs from whoever's date was on the old global row).
+Ordering stayed monotonic-descending with zero null dates. A synthetic second user sharing
+3 songs with Lucas confirmed: their List order is by *their* dates, `MIN` across playlists
+picks the earliest (a song liked in 2023 but in a playlist since 2020 sorts at 2020),
+`addedRange`/`likedCounts` are their own history, Lucas's `total` stays 6218, and the
+`?playlist=` cross-tenant check still returns 0. Also isolated-tested `syncSongs`'
+pagination + stub filtering, and confirmed via the live HTTP server with a signed session
+cookie. **Not yet run against the droplet** — needs the usual backup + one manual
+`npm run migrate-drop-added-at` over SSH; existing users' Liked Songs rows then rebuild
+correctly on their next login sync.
+
 ## Spotify API — hard-won findings
 
 - **Two Spotify Developer apps are in play.** The current `.env` credentials are for the
@@ -639,10 +719,12 @@ this code path at all.
 - **Rate limits are real and were hit multiple times.** Root cause was re-walking
   Spotify's full saved-tracks endpoint (~101 pages) on every server restart during
   development. Fixed by: (a) never auto-triggering full walks on startup/login, (b)
-  `syncSongs()`'s incremental newest-first stop-early logic, (c) deriving the artist
-  roster from what's already stored locally instead of a second Spotify walk — originally
-  a `songs.json` derivation step, now free: `db/songs.js`'s `mergeTracks` stub-creates
-  every artist's row as songs come in, so `artistsDb.getAll()` already *is* the roster.
+  deriving the artist roster from what's already stored locally instead of a second
+  Spotify walk — originally a `songs.json` derivation step, now free: `db/songs.js`'s
+  `mergeTracks` stub-creates every artist's row as songs come in, so `artistsDb.getAll()`
+  already *is* the roster. (`syncSongs` also had a newest-first stop-early walk for a
+  while — dropped Sep 2026, see "Per-user 'Added' date"; safe now that (a) killed the
+  per-restart trigger and sync is per-login.)
 
 ## Country-of-origin pipeline (in `scripts/sync.js`'s `resolveCountries()`, cascading, cheapest-first)
 
@@ -887,7 +969,10 @@ remotely. Chosen over two alternatives on purpose:
 
 Two pieces:
 - `scripts/deploy.sh` — git-tracked, so it exists locally too, but only ever *runs* on
-  the droplet: `git pull && npm install && npm run build && systemctl restart playlister`.
+  the droplet: `git pull` → `npm install` → timestamped `data/playlister.db` backup (last
+  5 kept) → idempotent schema migrations (currently just `npm run migrate-drop-added-at`,
+  each self-guards) → `npm run build` → `systemctl restart playlister` → Cloudflare cache
+  purge. Migrations run before the restart so the schema matches the code coming up.
 - `~/.ssh/config` (local machine only, not git-tracked) has a `playlister-prod` host
   alias for `159.223.125.80` — keeps the droplet's IP out of the committed repo
   entirely (it's also not permanent, see above), and out of `package.json`'s `deploy`
@@ -901,7 +986,12 @@ on every future change *to `deploy.sh` itself*: bash has already read/buffered t
 by the time `git pull` (line 1 of the script) rewrites it on disk, so that first run
 still executes the *old* logic — a second `npm run deploy` right after is what actually
 exercises the new version. Not a bug, just worth remembering before assuming a
-`deploy.sh` change didn't work.
+`deploy.sh` change didn't work. **This bites the Sep 2026 `migrate-drop-added-at` rollout
+specifically**: the first `npm run deploy` runs the old (migration-free) `deploy.sh`
+against the new code, which drops `songs.added_at` from its `INSERT` — so a sync would
+hit a `NOT NULL` crash in the gap. Run `npm run migrate-drop-added-at` by hand over SSH
+(after backing up `data/playlister.db`) right after that first deploy, before anyone
+syncs; every deploy after that one runs it automatically.
 
 **Real staleness incident, caught by Lucas**: the first real test of this pipeline (adding
 the Events tab) deployed cleanly by every server-side check, but Lucas reported the tab
@@ -935,15 +1025,17 @@ other clone that currently exists.
 
 ## Open items / natural next steps
 
-(Status as of end of day Aug 31 2026 — multi-tenancy shipped and live this session.)
+(Status as of Sep 3 2026 — per-user "Added" date fix built, not yet deployed.)
 
-- **Multi-tenancy is deployed and live**, exercised heavily this session — but always as
-  Lucas's own one real account, repeatedly wiped (via the Delete button or by hand) and
-  logged back in as a stand-in "new user." **Still genuinely open**: allowlist a second
-  real Spotify account in the Developer Dashboard and do one real two-account login side
-  by side, to confirm cross-tenant isolation holds for an actual second identity — the
-  strongest evidence so far is still the synthetic DB-seeded second user from earlier in
-  the session, not a real second login.
+- **Per-user "Added" date fix is built and locally verified, NOT yet on the droplet.**
+  Ship path: `git push` → `npm run deploy` → then over SSH, back up
+  `data/playlister.db` and run `npm run migrate-drop-added-at` once, verify. Existing
+  users' Liked Songs rows rebuild correctly on their next login sync. See "Per-user
+  'Added' date" above.
+- **Multi-tenancy is deployed and live**, and real second/third users have now logged in
+  on the deployed app (that's how the "Added" date bug surfaced). Cross-tenant isolation
+  held for real identities. Still worth a deliberate side-by-side two-account pass on the
+  new sync/read code once it's deployed.
 - **The Delete button wipes the entire database (every user's data) and is deliberately
   open to any logged-in session right now**, not gated to one admin — Lucas's explicit
   call, made knowingly ("yes I understand how dumb that sounds"). Worth revisiting once
@@ -978,3 +1070,6 @@ other clone that currently exists.
 - **Multi-tenancy** — **done, live**, shipped and iterated on heavily in one long session
   (Aug 31 2026). See the "Multi-tenancy" sections above for the architecture, the real
   bugs found and fixed, and what's still open (a real second-account test chief among it).
+- **Per-user "Added" date** — **built, verified locally, not yet deployed** (Sep 3 2026).
+  Liked Songs is now a fully-reconciled snapshot-less playlist; `songs.added_at` dropped;
+  reads derive "Added" per-user from `playlist_tracks`. See "Per-user 'Added' date" above.
