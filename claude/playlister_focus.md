@@ -477,7 +477,8 @@ starts empty) while still skipping redundant work on later re-syncs.
 
 **Background sync**: no queue library — 25-user Development-Mode cap, one
 systemd-managed process, a real job queue would be more machinery than this warrants.
-Triggered server-side right after `/callback`, not manually — `sync_status` lives on the
+Triggered server-side from `/callback` (originally on *every* login — now conditional,
+see "Login sync is conditional" below) — `sync_status` lives on the
 `users` row (not in memory) specifically so a systemd restart mid-sync doesn't leave a
 user's frontend polling forever against nothing; `server/index.js` calls
 `syncQueue.recoverStuckSyncs()` once at boot to flip any interrupted `'syncing'` user to
@@ -695,9 +696,51 @@ picks the earliest (a song liked in 2023 but in a playlist since 2020 sorts at 2
 `addedRange`/`likedCounts` are their own history, Lucas's `total` stays 6218, and the
 `?playlist=` cross-tenant check still returns 0. Also isolated-tested `syncSongs`'
 pagination + stub filtering, and confirmed via the live HTTP server with a signed session
-cookie. **Not yet run against the droplet** — needs the usual backup + one manual
-`npm run migrate-drop-added-at` over SSH; existing users' Liked Songs rows then rebuild
-correctly on their next login sync.
+cookie.
+
+**Deployed to the droplet (Sep 3 2026)** — `deploy.sh` ran `migrate-drop-added-at`
+cleanly (`songs.added_at removed, song_details rebuilt`) after taking a DB backup. `npm
+install` on that droplet is genuinely slow (~4 min) — the first deploy attempt was killed
+prematurely thinking it had hung; it hadn't. Deployed bundle verified byte-identical to
+local, `/api/*` still 401s without a session, `/login` still 302s. The authed API and a
+real sync weren't verifiable remotely (no prod session) — left for a real login + the
+still-open two-account test.
+
+## Login sync is conditional; manual Sync button (Sep 3 2026)
+
+Every login used to trigger a full blocking sync (`/callback` unconditionally set
+`sync_status='syncing'` + enqueued, frontend blocked until `done`). Harmless when the
+`songs` phase stopped early (~seconds for a returning user); wasteful once it became a
+full Liked-Songs walk (see above). Lucas: "why do I need to fetch my songs and do the
+whole sync every time I log in?"
+
+**Now:**
+- New `users.last_synced_at` (nullable, additive — self-heals via the same `PRAGMA
+  table_info` + `ALTER` block as `sync_progress_*`; a one-shot backfill sets it to *now*
+  for existing `sync_status='done'` users so the first post-deploy login doesn't
+  re-sync everyone at once). `db/users.js`'s `setSyncStatus(id, 'done')` stamps it — the
+  single point a sync is known complete.
+- `routes/index.js`'s `enqueueSyncIfNeeded(userId, {force})`: sync on login only if never
+  synced, `sync_status='error'`, or `last_synced_at` older than `SYNC_STALE_MS` (24h).
+  Skips if already `'syncing'`. A returning user with a fresh library goes straight to the
+  app.
+- New `POST /api/sync` (`force: true`) — the manual **Sync** button (header, next to
+  Delete; the old removed stub is now real). Still no-ops if a sync is already running.
+- `App.jsx`: blocks (the "building your library" screen) **only** on a genuine first sync
+  (`lastSyncedAt` null). Otherwise shows the app immediately; a running sync (stale
+  refresh from `/callback`, or the button) surfaces as a header "Syncing…" indicator via
+  a `syncing` flag, and on completion bumps a `dataVersion` counter. `dataVersion` is
+  threaded as a prop into `SongList` → `Filters`/`SongTable` (added to their fetch-effect
+  deps — a surgical re-fetch that keeps the uncontrolled filter inputs intact) and as
+  `key={dataVersion}` on `<Dashboards>` (a full remount is fine there and avoids auditing
+  each ECharts wrapper's update path). The sync-status poll effect now covers both the
+  blocking first-build and the non-blocking background/manual case.
+
+**Verified locally**: new user → blocking sync; fresh returning user → no sync; user
+stale by 3 days → background sync enqueued on login; errored user → re-sync; `POST
+/api/sync` while syncing → no double-run (concurrent POSTs tested); `last_synced_at`
+stamps on completion and the backfill runs once. Full HTTP flow (mount → Sync button →
+poll → done) exercised against the real server with a stubbed sync layer.
 
 ## Spotify API — hard-won findings
 
@@ -1025,24 +1068,25 @@ other clone that currently exists.
 
 ## Open items / natural next steps
 
-(Status as of Sep 3 2026 — per-user "Added" date fix built, not yet deployed.)
+(Status as of Sep 3 2026.)
 
-- **Per-user "Added" date fix is built and locally verified, NOT yet on the droplet.**
-  Ship path: `git push` → `npm run deploy` → then over SSH, back up
-  `data/playlister.db` and run `npm run migrate-drop-added-at` once, verify. Existing
-  users' Liked Songs rows rebuild correctly on their next login sync. See "Per-user
-  'Added' date" above.
+- **Per-user "Added" date fix — deployed and live** (Sep 3). See "Per-user 'Added' date"
+  above. Still wants a real login by Lucas to confirm the authed path end to end.
+- **Conditional login sync + Sync button — built and locally verified, NOT yet deployed.**
+  Ships in the normal `git push` → `npm run deploy` (the `last_synced_at` column
+  self-heals + backfills on boot, no manual migration step). See "Login sync is
+  conditional" above.
 - **Multi-tenancy is deployed and live**, and real second/third users have now logged in
   on the deployed app (that's how the "Added" date bug surfaced). Cross-tenant isolation
   held for real identities. Still worth a deliberate side-by-side two-account pass on the
-  new sync/read code once it's deployed.
+  new sync/read code.
 - **The Delete button wipes the entire database (every user's data) and is deliberately
   open to any logged-in session right now**, not gated to one admin — Lucas's explicit
   call, made knowingly ("yes I understand how dumb that sounds"). Worth revisiting once
   real other users are actually using this day to day, not just Lucas testing solo.
-- The Sync button was removed entirely (it was always an unwired stub) — there's no
-  manual "resync now" trigger in the UI at all today. `npm run sync <userId>` (droplet
-  SSH) or logging back in are the only ways to trigger a sync.
+- The **Sync button is now real** (`POST /api/sync`, header) — was a removed stub. A
+  library >24h stale also re-syncs automatically (in the background) on next login;
+  `npm run sync <userId>` (droplet SSH) still works for maintenance.
 - "Create Playlist" button is still a no-op stub — wiring it up to actually build a
   Spotify playlist from the current filtered view is the obvious next feature (needs
   `playlist-modify-private`/`playlist-modify-public` added to the OAuth scope). Now that
@@ -1070,6 +1114,9 @@ other clone that currently exists.
 - **Multi-tenancy** — **done, live**, shipped and iterated on heavily in one long session
   (Aug 31 2026). See the "Multi-tenancy" sections above for the architecture, the real
   bugs found and fixed, and what's still open (a real second-account test chief among it).
-- **Per-user "Added" date** — **built, verified locally, not yet deployed** (Sep 3 2026).
-  Liked Songs is now a fully-reconciled snapshot-less playlist; `songs.added_at` dropped;
-  reads derive "Added" per-user from `playlist_tracks`. See "Per-user 'Added' date" above.
+- **Per-user "Added" date** — **done, deployed** (Sep 3 2026). Liked Songs is now a
+  fully-reconciled snapshot-less playlist; `songs.added_at` dropped; reads derive "Added"
+  per-user from `playlist_tracks`. See "Per-user 'Added' date" above.
+- **Conditional login sync + Sync button** — **built, verified locally, not yet deployed**
+  (Sep 3 2026). Login only blocks on a genuine first sync; returning users go straight in;
+  manual Sync button + a 24h-stale auto-refresh. See "Login sync is conditional" above.
