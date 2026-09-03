@@ -3,7 +3,7 @@ import { EMPTY_FILTERS } from './pages/songList/Filters';
 import { SongList } from './pages/songList';
 import { Dashboards } from './pages/dashboards';
 import { Events } from './pages/events';
-import { getMe, getSyncStatus, getEnrichmentStatus, wipeDatabase } from './api';
+import { getMe, getSyncStatus, getEnrichmentStatus, wipeDatabase, requestSync } from './api';
 
 const PATH_FOR_TAB = { list: '/', dashboards: '/dashboards', events: '/events' };
 const TAB_FOR_PATH = { '/': 'list', '/dashboards': 'dashboards', '/events': 'events' };
@@ -45,17 +45,43 @@ export function App() {
   const [syncProgress, setSyncProgress] = useState(null);
   const [enrichmentStatus, setEnrichmentStatus] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  // A non-blocking sync is running (a stale-library refresh kicked off at
+  // login, or the manual Sync button) — the app is already showing, this
+  // just drives the header indicator and the post-sync data refresh.
+  const [syncing, setSyncing] = useState(false);
+  const [bgSyncError, setBgSyncError] = useState(null);
+  // Bumped when a background/manual sync completes — threaded into the List
+  // and Dashboards so they re-fetch against the updated library.
+  const [dataVersion, setDataVersion] = useState(0);
 
-  // On mount: who is this, if anyone? Every /api/* route requires a real
-  // session now, so this is the one place that decides whether to show the
-  // app shell at all, rather than every page checking for a 401 itself.
+  // On mount: who is this, and is their library already built? Every
+  // /api/* route requires a real session, so this is the one place that
+  // decides whether to show the app shell at all. Only a genuine
+  // first-ever sync (no lastSyncedAt) gets the blocking "building your
+  // library" screen — a returning user sees the app immediately, and a
+  // sync that happens to be running (stale-library refresh from
+  // /callback) just surfaces in the header via `syncing`.
   useEffect(() => {
     let cancelled = false;
     getMe()
       .then((me) => {
-        if (cancelled) return;
+        if (cancelled) return null;
         setUser(me);
-        setStatus('checking-sync');
+        return getSyncStatus();
+      })
+      .then((sync) => {
+        if (cancelled || !sync) return;
+        const hasData = !!sync.lastSyncedAt;
+        if (sync.status === 'error' && !hasData) {
+          setSyncError(sync.error);
+          setStatus('sync-error');
+        } else if (sync.status !== 'done' && !hasData) {
+          setSyncProgress(sync.progress);
+          setStatus('checking-sync');
+        } else {
+          setStatus('ready');
+          if (sync.status === 'syncing') setSyncing(true);
+        }
       })
       .catch(() => !cancelled && setStatus('unauthenticated'));
     return () => {
@@ -63,11 +89,14 @@ export function App() {
     };
   }, []);
 
-  // A user's first login triggers a background sync server-side (see
-  // routes/index.js's /callback) — poll until it's done before showing any
-  // data, so a brand-new user doesn't land on an empty-looking library.
+  // Polls sync status while a sync is in flight — the blocking first-build
+  // (status 'checking-sync') or a non-blocking background/manual sync
+  // (`syncing`, app already showing). On completion the background case
+  // bumps dataVersion to re-fetch the now-updated library; the blocking
+  // case flips to 'ready'.
   useEffect(() => {
-    if (status !== 'checking-sync') return;
+    const blocking = status === 'checking-sync';
+    if (!blocking && !syncing) return;
     let cancelled = false;
     let timer = null;
 
@@ -76,16 +105,32 @@ export function App() {
         .then((result) => {
           if (cancelled) return;
           if (result.status === 'done') {
-            setStatus('ready');
+            if (blocking) {
+              setStatus('ready');
+            } else {
+              setSyncing(false);
+              setDataVersion((v) => v + 1);
+            }
           } else if (result.status === 'error') {
-            setSyncError(result.error);
-            setStatus('sync-error');
+            if (blocking) {
+              setSyncError(result.error);
+              setStatus('sync-error');
+            } else {
+              setSyncing(false);
+              setBgSyncError(result.error || 'Sync failed');
+            }
           } else {
             setSyncProgress(result.progress);
             timer = setTimeout(poll, SYNC_POLL_MS);
           }
         })
-        .catch(() => !cancelled && setStatus('unauthenticated'));
+        .catch(() => {
+          if (cancelled) return;
+          // Only the blocking screen bails to login on a failed poll; a
+          // background poll just stops quietly.
+          if (blocking) setStatus('unauthenticated');
+          else setSyncing(false);
+        });
     }
     poll();
 
@@ -107,14 +152,16 @@ export function App() {
       if (timer) clearTimeout(timer);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [status]);
+  }, [status, syncing]);
 
   // The slow global enrichment pass (country/genre/popularity resolution)
   // keeps running in the background long after a user's own library is
   // ready — poll for it separately, only once the app shell is actually
   // showing, so there's a persistent sense of "still working" rather than
   // it silently happening with no visibility. Stops polling once fully
-  // resolved rather than continuing to hit the endpoint for no reason.
+  // resolved rather than continuing to hit the endpoint for no reason;
+  // re-runs on dataVersion so a just-finished sync (which may have queued
+  // fresh enrichment work) starts it polling again.
   useEffect(() => {
     if (status !== 'ready') return;
     let cancelled = false;
@@ -145,7 +192,7 @@ export function App() {
       if (timer) clearTimeout(timer);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [status]);
+  }, [status, dataVersion]);
 
   // Keeps the tab in sync with browser back/forward, since switchTab below
   // makes tab state a real part of the URL.
@@ -253,6 +300,19 @@ export function App() {
       });
   }
 
+  // Manual "sync now." Sets `syncing` optimistically so the poll effect
+  // starts immediately; the server has already flipped sync_status to
+  // 'syncing' (or was already syncing, in which case this is a no-op).
+  function handleSync() {
+    setBgSyncError(null);
+    setSyncProgress(null);
+    setSyncing(true);
+    requestSync().catch((err) => {
+      setSyncing(false);
+      setBgSyncError(err.message);
+    });
+  }
+
   function switchTab(next) {
     setTab(next);
     if (next === 'dashboards') setDashboardsVisited(true);
@@ -292,6 +352,19 @@ export function App() {
         </button>
         <div className="tabs-status">
           {renderEnrichmentStatus()}
+          {syncing && (
+            <span className="sync-status-text">
+              {syncProgress ? SYNC_PHASE_LABELS[syncProgress.phase] ?? 'Syncing…' : 'Syncing…'}
+            </span>
+          )}
+          {bgSyncError && !syncing && (
+            <span className="sync-status-text failed" title={bgSyncError}>
+              Sync failed
+            </span>
+          )}
+          <button className="page-button" onClick={handleSync} disabled={syncing}>
+            {syncing ? 'Syncing…' : 'Sync'}
+          </button>
           <button className="page-button danger" onClick={handleDelete} disabled={deleting}>
             {deleting ? 'Deleting…' : 'Delete'}
           </button>
@@ -299,11 +372,16 @@ export function App() {
       </div>
 
       <div style={{ display: tab === 'list' ? '' : 'none' }}>
-        <SongList filters={filters} onChange={setFilters} onReset={() => setFilters(EMPTY_FILTERS)} />
+        <SongList
+          filters={filters}
+          onChange={setFilters}
+          onReset={() => setFilters(EMPTY_FILTERS)}
+          dataVersion={dataVersion}
+        />
       </div>
 
       <div style={{ display: tab === 'dashboards' ? '' : 'none' }}>
-        {dashboardsVisited && <Dashboards onFilterClick={applyDashboardFilter} />}
+        {dashboardsVisited && <Dashboards key={dataVersion} onFilterClick={applyDashboardFilter} />}
       </div>
 
       <div style={{ display: tab === 'events' ? '' : 'none' }}>

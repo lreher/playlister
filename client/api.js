@@ -27,6 +27,15 @@ export function getSyncStatus() {
   return fetchJson('/api/sync-status');
 }
 
+export async function requestSync() {
+  const res = await fetch('/api/sync', { method: 'POST' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to start sync');
+  }
+  return res.json();
+}
+
 export function getEnrichmentStatus() {
   return fetchJson('/api/enrichment-status');
 }

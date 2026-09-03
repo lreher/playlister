@@ -29,6 +29,12 @@ db.exec(`
     sync_progress_phase TEXT,            -- 'songs' | 'playlists'
     sync_progress_current INTEGER,
     sync_progress_total INTEGER,
+    -- Timestamp of the last completed fast sync (db/users.js stamps it
+    -- whenever sync_status becomes 'done'). NULL = never synced. Drives
+    -- both "should /callback kick off a sync on login" (never, or older
+    -- than SYNC_STALE_MS) and the frontend's "block on first sync vs. show
+    -- the app and sync in the background" decision.
+    last_synced_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
 
@@ -131,8 +137,19 @@ for (const [column, type] of [
   ['sync_progress_phase', 'TEXT'],
   ['sync_progress_current', 'INTEGER'],
   ['sync_progress_total', 'INTEGER'],
+  ['last_synced_at', 'TEXT'],
 ]) {
   if (!userColumns.has(column)) db.exec(`ALTER TABLE users ADD COLUMN ${column} ${type}`);
+}
+// One-time backfill for users who already finished a sync before this
+// column existed: treat them as freshly synced (rather than "never"), so
+// the first login after this ships doesn't force a full blocking sync on
+// everyone at once. Runs once — after it, no row matches.
+if (!userColumns.has('last_synced_at')) {
+  db.exec(
+    `UPDATE users SET last_synced_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+     WHERE sync_status = 'done' AND last_synced_at IS NULL`
+  );
 }
 
 // No PRAGMA foreign_keys — deliberately off (SQLite's own default). Artist

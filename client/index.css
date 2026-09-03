@@ -99,10 +99,15 @@ h1 {
   padding-bottom: 0.6rem;
 }
 
-.enrichment-status {
+.enrichment-status,
+.sync-status-text {
   color: var(--text-muted);
   font-size: 0.8rem;
   white-space: nowrap;
+}
+
+.sync-status-text.failed {
+  color: #e5484d;
 }
 
 .page-button.danger {

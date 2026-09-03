@@ -1,5 +1,6 @@
 // The List tab's paginated song table. Re-fetches whenever `filters`
-// (owned by App) or the local page offset changes.
+// (owned by App) or the local page offset changes — and when `dataVersion`
+// bumps (a sync just finished, so the underlying library changed).
 import { useEffect, useState } from 'preact/hooks';
 import { getSongs } from '../../../api';
 import { countryLabel } from '../../../utils/format';
@@ -8,7 +9,7 @@ import { Pagination } from '../../../components/Pagination';
 const LIMIT = 50;
 const COLUMNS = ['Name', 'Artist(s)', 'Album', 'Year', 'Added', 'Country', 'Genres'];
 
-export function SongTable({ filters }) {
+export function SongTable({ filters, dataVersion }) {
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState(null);
   const [error, setError] = useState(null);
@@ -29,7 +30,7 @@ export function SongTable({ filters }) {
     return () => {
       cancelled = true;
     };
-  }, [filters, offset]);
+  }, [filters, offset, dataVersion]);
 
   if (error) return <div>Error: {error}</div>;
   if (!page) return <div>Loading...</div>;

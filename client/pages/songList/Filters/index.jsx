@@ -25,15 +25,17 @@ export const EMPTY_FILTERS = {
   popularityMax: null,
 };
 
-export function Filters({ filters, onChange, onReset }) {
+export function Filters({ filters, onChange, onReset, dataVersion }) {
   const [options, setOptions] = useState(null);
   // Bumped on "Reset filters" — remounts the uncontrolled primitives
   // (OptionsSearch, RangeSlider) so they snap back to their defaults.
   const [resetToken, setResetToken] = useState(0);
 
+  // Re-fetches when dataVersion bumps (a sync finished) so the option
+  // lists / ranges reflect the updated library.
   useEffect(() => {
     getFilters().then(setOptions);
-  }, []);
+  }, [dataVersion]);
 
   function set(key) {
     return (value) => onChange({ ...filters, [key]: value });

@@ -14,6 +14,16 @@ const updateSyncStatus = db.prepare(`
     sync_progress_phase = NULL, sync_progress_current = NULL, sync_progress_total = NULL
   WHERE id = ?
 `);
+// The 'done' transition additionally stamps last_synced_at — this is the
+// single point where a sync is known to have completed, so it's where
+// "when did this user last sync" gets recorded (drives login-sync
+// staleness and the frontend's block-vs-background decision).
+const updateSyncStatusDone = db.prepare(`
+  UPDATE users SET sync_status = 'done', sync_error = NULL,
+    sync_progress_phase = NULL, sync_progress_current = NULL, sync_progress_total = NULL,
+    last_synced_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+  WHERE id = ?
+`);
 const updateSyncProgress = db.prepare(
   'UPDATE users SET sync_progress_phase = ?, sync_progress_current = ?, sync_progress_total = ? WHERE id = ?'
 );
@@ -28,6 +38,7 @@ function rowToUser(row) {
       row.sync_progress_phase == null
         ? null
         : { phase: row.sync_progress_phase, current: row.sync_progress_current, total: row.sync_progress_total },
+    lastSyncedAt: row.last_synced_at,
     createdAt: row.created_at,
   };
 }
@@ -47,7 +58,8 @@ const upsert = ({ id, displayName }) => {
 };
 
 const setSyncStatus = (id, status, error = null) => {
-  updateSyncStatus.run(status, error, id);
+  if (status === 'done') updateSyncStatusDone.run(id);
+  else updateSyncStatus.run(status, error, id);
 };
 
 // `total` is nullable — a phase can report "in progress, count unknown
@@ -58,7 +70,14 @@ const setSyncProgress = (id, phase, current, total) => {
 
 const getSyncStatus = (id) => {
   const user = getById(id);
-  return user ? { status: user.syncStatus, error: user.syncError, progress: user.syncProgress } : null;
+  return user
+    ? {
+        status: user.syncStatus,
+        error: user.syncError,
+        progress: user.syncProgress,
+        lastSyncedAt: user.lastSyncedAt,
+      }
+    : null;
 };
 
 module.exports = { getById, getAll, upsert, setSyncStatus, setSyncProgress, getSyncStatus };

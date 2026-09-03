@@ -12,6 +12,26 @@ const { registerStaticRoutes } = require('./static');
 
 const router = FindMyWay();
 
+// A library older than this is re-synced automatically on the user's next
+// login — in the background (the app shows immediately with existing data),
+// unlike a first-ever sync which blocks. Also the only automatic re-sync
+// trigger; anything sooner is the manual Sync button.
+const SYNC_STALE_MS = 24 * 60 * 60 * 1000;
+
+// Whether logging in should kick off a sync: never synced, a previous sync
+// errored, or the last one is stale. Skips if one's already running. Used
+// by /callback and /api/sync.
+function enqueueSyncIfNeeded(userId, { force = false } = {}) {
+  const user = usersDb.getById(userId);
+  if (!user || user.syncStatus === 'syncing') return;
+  const stale =
+    !user.lastSyncedAt || Date.now() - Date.parse(user.lastSyncedAt) > SYNC_STALE_MS;
+  if (force || user.syncStatus === 'error' || stale) {
+    usersDb.setSyncStatus(userId, 'syncing');
+    syncQueue.enqueueSync(userId);
+  }
+}
+
 // Register static routes
 registerStaticRoutes(router);
 
@@ -58,8 +78,10 @@ router.on('GET', '/callback', async (req, res) => {
   try {
     const { userId } = await spotify.exchangeCodeForTokens(code);
     session.setSessionCookie(res, userId);
-    usersDb.setSyncStatus(userId, 'syncing');
-    syncQueue.enqueueSync(userId);
+    // Only sync on login when there's a reason to (first login, prior
+    // error, or a stale library) — a returning user with a fresh library
+    // goes straight to the app. The manual Sync button covers "update now."
+    enqueueSyncIfNeeded(userId);
     res.writeHead(302, { Location: '/' });
     res.end();
   } catch (err) {
@@ -87,6 +109,19 @@ router.on(
   'GET',
   '/api/sync-status',
   requireSession((req, res, userId) => {
+    sendJson(res, usersDb.getSyncStatus(userId));
+  })
+);
+
+// Manual "sync now" — the Sync button. Force-enqueues regardless of
+// staleness (that's the point of the button), unless one's already
+// running. Returns the current sync-status so the frontend can start
+// polling immediately.
+router.on(
+  'POST',
+  '/api/sync',
+  requireSession((req, res, userId) => {
+    enqueueSyncIfNeeded(userId, { force: true });
     sendJson(res, usersDb.getSyncStatus(userId));
   })
 );
