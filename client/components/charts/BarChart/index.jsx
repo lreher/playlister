@@ -3,18 +3,19 @@
 // lifetime, so the chart is built once (empty deps) and just resized on
 // window resize.
 import { useEffect, useRef } from 'preact/hooks';
-import { chartTheme, baseChartOption } from '../../../themes/chartTheme';
+import { chartTheme, baseChartOption, barGradient } from '../../../themes/chartTheme';
 
 export function BarChart({
   categories,
   values,
   rotateLabels,
-  // Default: the shared theme color — omit these two props entirely to
-  // revert a chart to it. Either can also be an echarts-style callback
-  // `(params) => color` (params.value, params.dataIndex, ...) instead of a
-  // flat string, for a color that depends on each bar's own data — e.g. a
-  // chart that gets redder the higher its value.
-  color = chartTheme.accent,
+  // Default: the shared purple->magenta gradient (chartTheme.barGradient),
+  // orange on hover — omit these two props entirely to revert a chart to
+  // it. Either can also be an echarts-style callback `(params) => color`
+  // (params.value, params.dataIndex, ...) instead of a flat string/gradient,
+  // for a color that depends on each bar's own data — e.g. a chart that
+  // gets redder the higher its value.
+  color = barGradient,
   emphasisColor = chartTheme.emphasis,
   onClickCategory,
 }) {

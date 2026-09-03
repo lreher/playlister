@@ -61,24 +61,26 @@ export function SongTable({ filters, dataVersion }) {
         {/* Stub — real playlist creation/export is a likely next step. */}
         <button className="page-button create-playlist-button">Create Playlist</button>
       </div>
-      <table className="songs-table">
-        <tr>
-          {COLUMNS.map((label) => (
-            <th key={label}>{label}</th>
-          ))}
-        </tr>
-        {page.items.map((song) => (
-          <tr key={song.id}>
-            <td>{song.name}</td>
-            <td>{song.artists}</td>
-            <td>{song.album}</td>
-            <td>{song.year ?? '—'}</td>
-            <td>{new Date(song.addedAt).toLocaleDateString()}</td>
-            <td>{countryLabel(song.country)}</td>
-            <td>{song.genres.length ? song.genres.join(', ') : '—'}</td>
+      <div className="songs-table-wrap">
+        <table className="songs-table">
+          <tr>
+            {COLUMNS.map((label) => (
+              <th key={label}>{label}</th>
+            ))}
           </tr>
-        ))}
-      </table>
+          {page.items.map((song) => (
+            <tr key={song.id}>
+              <td>{song.name}</td>
+              <td>{song.artists}</td>
+              <td>{song.album}</td>
+              <td>{song.year ?? '—'}</td>
+              <td>{new Date(song.addedAt).toLocaleDateString()}</td>
+              <td>{countryLabel(song.country)}</td>
+              <td>{song.genres.length ? song.genres.join(', ') : '—'}</td>
+            </tr>
+          ))}
+        </table>
+      </div>
       <Pagination offset={page.offset} limit={LIMIT} total={page.total} onOffsetChange={setOffset} />
     </>
   );

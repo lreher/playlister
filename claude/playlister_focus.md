@@ -202,7 +202,7 @@ needs a valid Spotify token.
   `world.geo.json` (world country boundaries, ECharts' own test-data file, ~1MB),
   `bundle.js`/`bundle.css` (esbuild output, **gitignored** — build artifacts, not
   source; see "Client architecture" below for where the CSS source actually lives —
-  `client/index.css` plus each chart's own colocated `colors.css`).
+  `client/index.css` plus `CountryMap`'s colocated `colors.css`).
 - `client/` — the SPA source. See "Client architecture" below.
 
 ## Client architecture (Preact + esbuild — replaced the vanilla `public/` setup)
@@ -275,6 +275,39 @@ client/
   looked configurable but wasn't really, since nothing ever diverged. Now `BarChart`/
   `WorldMap` default `color`/`emphasisColor` from `themes/chartTheme.js`; a dashboard file
   only declares its own override when it actually wants to differ from the shared theme.
+  Taken further in the Sep 2026 restyle (see "Visual restyle" below): the four bar charts
+  now pass *no* color at all — they all use `chartTheme.barGradient` (a purple→magenta
+  vertical gradient), and their per-chart `colors.css` files were deleted. Only
+  `CountryMap` still keeps its own `colors.css` (the map bubble is genuinely its own
+  thing).
+
+## Visual restyle — navy + neon-gradient dashboard look (Sep 2026)
+
+Lucas handed over a PNG of a Looker-Studio / GA4-style dark dashboard and asked for that
+look. A vibe pass, not an architectural one (see musings.md) — first cut built and
+iterated on from feedback rather than planned upfront.
+
+- **Palette lives entirely in `client/index.css`'s `:root`** — the restyle is mostly new
+  values there. `--bg` deep navy `#16223f`, `--bg-elevated` `#1e2b4c` (card surface),
+  `--border` `#2c3d63`, `--text` `#eef1f9`, `--text-muted` `#8a99bf`, `--accent` magenta
+  `#e0389d` (replaced Spotify green as the single accent), plus three gradient stops
+  `--grad-purple` / `--grad-magenta` / `--grad-orange`. `globalTheme.js` / `chartTheme.js`
+  read these at load time exactly as before — no change to that plumbing.
+- **Cards**: `.chart-container`, `#app` (the List panel), and `#filters` share one
+  card treatment (elevated bg + hairline border + soft shadow + radius). `#app` gained
+  padding so the toolbar/table/pagination sit inside one panel; `.chart-container` did
+  **not** get padding (echarts.init sizes the canvas to clientWidth/Height including
+  padding — inner spacing comes from the chart's own `grid` config instead). `SongTable`
+  now wraps its `<table>` in `.songs-table-wrap` (`overflow-x: auto`).
+- **Charts**: `chartTheme.js` exports `barGradient` (a plain `{type:'linear',…}` object,
+  vertical purple→magenta). `BarChart`'s default `color` is now that gradient;
+  `emphasisColor` defaults to orange (`--chart-emphasis`). The four bar-chart components
+  dropped their `color`/`emphasisColor` props + `colors.css` imports (4 files deleted) —
+  they all look the same in the reference, so per-chart hues were pointless divergence.
+- **Font**: Roboto (added to `static/index.html`), Inter kept as the fallback.
+- Accent-driven bits (buttons, tabs, pagination active state, login button, sync progress
+  bar) use the magenta accent or the full gradient; the old `color: #000000` (readable on
+  green) became `--accent-contrast` (`#ffffff`).
 
 ## Dashboards tab
 
@@ -835,7 +868,10 @@ is more complete than the country rule).
 ## Other design decisions made along the way
 
 - Barebones philosophy: no framework, `find-my-way` router only, vanilla frontend JS.
-- Dark theme, Spotify green (`#1db954`) accent, Inter font.
+- Dark theme. **Restyled Sep 2026** (see "Visual restyle" below) — was Spotify green
+  (`#1db954`) + near-black + Inter; now deep navy (`#16223f`) + a magenta accent
+  (`#e0389d`) + a purple→magenta→orange chart gradient + Roboto, to match a
+  Looker-Studio-style reference dashboard Lucas handed over.
 - Filters built: genre, decade (not individual year — 72 years was too many for a
   dropdown), country, album type, artist, plus **dual-handle range sliders** (hand-built,
   two overlaid native `<input type=range>`, no library) for duration, liked-date, and

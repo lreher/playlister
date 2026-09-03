@@ -1,17 +1,24 @@
 :root {
-  --bg: #121212;
-  --bg-elevated: #1a1a1a;
-  --text: #ffffff;
-  --text-muted: #b3b3b3;
-  --accent: #1db954;
-  --border: #282828;
+  /* Deep-navy dashboard palette (see the reference this was styled from —
+     GA4 / Looker Studio dark). One accent (magenta) instead of the old
+     Spotify green; charts use the purple->magenta->orange gradient below. */
+  --bg: #16223f;
+  --bg-elevated: #1e2b4c;
+  --text: #eef1f9;
+  --text-muted: #8a99bf;
+  --accent: #e0389d;
+  --accent-contrast: #ffffff;
+  --border: #2c3d63;
 
-  /* Shared across all charts (client/themes/chartTheme.js reads this at load
-     time via client/utils/cssVar.js) — no DOM element actually uses it, it
-     just lives here so it's editable with a color picker instead of hidden
-     inside JS. A chart's own one-off colors (not shared) live in that
-     chart's own folder instead — e.g. YearBarChart/colors.css. */
-  --chart-emphasis: #f5a623;
+  /* The neon gradient. Charts read these via client/utils/cssVar.js at load
+     time — no DOM element uses them directly, they live here so they get a
+     color picker instead of being buried in JS. */
+  --grad-purple: #a64fd6;
+  --grad-magenta: #e0339b;
+  --grad-orange: #f26a3a;
+
+  /* A chart's hover/click color. */
+  --chart-emphasis: #f26a3a;
 }
 
 * {
@@ -23,13 +30,13 @@ body {
   padding: 2rem;
   background: var(--bg);
   color: var(--text);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Roboto', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 h1 {
   max-width: 1400px;
   margin: 0 auto 1.5rem;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .app-header {
@@ -44,6 +51,8 @@ h1 {
 .app-header h1 {
   margin: 0;
   max-width: none;
+  font-size: 1.4rem;
+  letter-spacing: -0.01em;
 }
 
 .current-user {
@@ -59,6 +68,22 @@ h1 {
 #app {
   max-width: 1400px;
   margin: 0 auto;
+}
+
+/* The card surface — panels in the reference sit on a slightly-lifted navy
+   with a hairline border and a soft shadow. */
+.card,
+.chart-container,
+#app,
+#filters {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+#app {
+  padding: 1rem 1.25rem 0.5rem;
 }
 
 #tabs {
@@ -107,16 +132,16 @@ h1 {
 }
 
 .sync-status-text.failed {
-  color: #e5484d;
+  color: #f2585b;
 }
 
 .page-button.danger {
-  border-color: #e5484d;
-  color: #e5484d;
+  border-color: #f2585b;
+  color: #f2585b;
 }
 
 .page-button.danger:hover:not(:disabled) {
-  background: #e5484d;
+  background: #f2585b;
   color: #ffffff;
 }
 
@@ -129,16 +154,17 @@ h1 {
 }
 
 .dashboard-chart h2 {
-  font-size: 1rem;
+  font-size: 1.05rem;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text);
   margin: 0 0 0.75rem;
 }
 
+/* No padding here — echarts.init sizes the canvas to clientWidth/Height
+   (padding included), so inner spacing comes from the chart's own `grid`
+   config, not CSS box padding. */
 .chart-container {
   height: 320px;
-  background: var(--bg-elevated);
-  border-radius: 8px;
 }
 
 .chart-container-map {
@@ -148,6 +174,7 @@ h1 {
 #filters {
   max-width: 1400px;
   margin: 0 auto 1rem;
+  padding: 1rem;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
@@ -165,10 +192,16 @@ h1 {
   padding: 0.4rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg-elevated);
+  background: var(--bg);
   color: var(--text);
   font-family: inherit;
   font-size: 0.875rem;
+}
+
+#filters select:focus,
+.filter-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .filter-search-input {
@@ -257,15 +290,15 @@ h1 {
 .login-button {
   display: inline-block;
   padding: 0.75rem 2rem;
-  background: var(--accent);
-  color: #000000;
+  background: linear-gradient(120deg, var(--grad-purple), var(--grad-magenta) 60%, var(--grad-orange));
+  color: var(--accent-contrast);
   font-weight: 600;
   text-decoration: none;
   border-radius: 999px;
 }
 
 .login-button:hover {
-  filter: brightness(1.1);
+  filter: brightness(1.08);
 }
 
 .sync-progress {
@@ -289,7 +322,7 @@ h1 {
 
 .sync-progress-fill {
   height: 100%;
-  background: var(--accent);
+  background: linear-gradient(90deg, var(--grad-purple), var(--grad-magenta), var(--grad-orange));
   transition: width 0.3s ease-out;
 }
 
@@ -320,7 +353,7 @@ h1 {
 
 .page-button:hover:not(:disabled) {
   background: var(--accent);
-  color: #000000;
+  color: var(--accent-contrast);
 }
 
 .page-button:disabled {
@@ -350,7 +383,7 @@ h1 {
 .pagination-page.active:disabled {
   border-color: var(--accent);
   background: var(--accent);
-  color: #000000;
+  color: var(--accent-contrast);
   opacity: 1;
 }
 
@@ -366,18 +399,23 @@ h1 {
 }
 
 .reset-filters-button:hover {
-  background: var(--bg-elevated);
+  background: var(--bg);
   color: var(--text);
 }
 
 .create-playlist-button {
   margin-left: auto;
-  background: var(--accent);
-  color: #000000;
+  background: linear-gradient(120deg, var(--grad-purple), var(--grad-magenta) 60%, var(--grad-orange));
+  border-color: transparent;
+  color: var(--accent-contrast);
 }
 
 .create-playlist-button:hover {
-  filter: brightness(1.1);
+  filter: brightness(1.08);
+}
+
+.songs-table-wrap {
+  overflow-x: auto;
 }
 
 .songs-table {
@@ -397,6 +435,7 @@ h1 {
   text-transform: uppercase;
   letter-spacing: 0.03em;
   padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
 }
 
 .songs-table td {
@@ -408,7 +447,7 @@ h1 {
 }
 
 .songs-table tr:hover td {
-  background: var(--bg-elevated);
+  background: rgba(224, 56, 157, 0.06);
 }
 
 .songs-table td:nth-child(4),
