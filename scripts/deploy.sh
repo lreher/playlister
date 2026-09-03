@@ -9,6 +9,20 @@ cd "$(dirname "$0")/.."
 
 git pull
 npm install
+
+# Snapshot the live DB before anything schema-related runs. Cheap insurance
+# (a few MB), and the one thing on this box that can't be recreated from
+# GitHub. Keep the last few.
+if [ -f data/playlister.db ]; then
+  cp data/playlister.db "data/playlister.db.deploy-backup-$(date +%Y%m%d-%H%M%S)"
+  ls -1t data/playlister.db.deploy-backup-* | tail -n +6 | xargs -r rm
+fi
+
+# Idempotent schema migrations (each self-guards and no-ops once applied) —
+# run before the restart so the schema matches the code coming up. Add new
+# one-time migrations here; drop them again once universally applied.
+npm run migrate-drop-added-at
+
 npm run build
 systemctl restart playlister
 

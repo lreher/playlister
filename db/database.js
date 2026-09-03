@@ -54,19 +54,22 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_artist_genres_artist ON artist_genres(artist_id);
   CREATE INDEX IF NOT EXISTS idx_artist_genres_genre ON artist_genres(genre);
 
+  -- No added_at here: "when was this added" is a per-user fact (each user
+  -- likes/adds the same track on their own date), and it already lives on
+  -- playlist_tracks, scoped per user through playlists. A column on the
+  -- shared songs row could only ever hold whoever synced it first — see
+  -- controllers/songs.js's userAddedAt subquery for how reads derive it.
   CREATE TABLE IF NOT EXISTS songs (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     album_name TEXT,
     album_release_date TEXT,
     album_type TEXT,
-    added_at TEXT NOT NULL,
     isrc TEXT,
     duration_ms INTEGER,
     explicit INTEGER,
     spotify_url TEXT
   );
-  CREATE INDEX IF NOT EXISTS idx_songs_added_at ON songs(added_at);
 
   CREATE TABLE IF NOT EXISTS song_artists (
     song_id TEXT NOT NULL,
@@ -151,7 +154,6 @@ db.exec(`
     s.album_name,
     s.album_release_date,
     s.album_type,
-    s.added_at,
     s.isrc,
     s.duration_ms,
     s.explicit,

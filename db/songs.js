@@ -5,8 +5,8 @@ const selectSongArtists = db.prepare(
   'SELECT sa.song_id, a.id, a.name FROM song_artists sa JOIN artists a ON a.id = sa.artist_id WHERE sa.song_id = ? ORDER BY sa.position'
 );
 const insertSong = db.prepare(`
-  INSERT INTO songs (id, name, album_name, album_release_date, album_type, added_at, isrc, duration_ms, explicit, spotify_url)
-  VALUES (@id, @name, @albumName, @albumReleaseDate, @albumType, @addedAt, @isrc, @durationMs, @explicit, @spotifyUrl)
+  INSERT INTO songs (id, name, album_name, album_release_date, album_type, isrc, duration_ms, explicit, spotify_url)
+  VALUES (@id, @name, @albumName, @albumReleaseDate, @albumType, @isrc, @durationMs, @explicit, @spotifyUrl)
 `);
 const insertSongArtist = db.prepare('INSERT INTO song_artists (song_id, artist_id, position) VALUES (?, ?, ?)');
 // name gets refreshed (Spotify occasionally corrects a display name) but
@@ -24,7 +24,6 @@ function rowToSong(row) {
     name: row.name,
     artists: selectSongArtists.all(row.id).map((a) => ({ id: a.id, name: a.name })),
     album: { name: row.album_name, releaseDate: row.album_release_date, albumType: row.album_type },
-    addedAt: row.added_at,
     isrc: row.isrc,
     durationMs: row.duration_ms,
     explicit: !!row.explicit,
@@ -42,7 +41,9 @@ const getById = (id) => {
 // Dedupes raw Spotify track items (`{added_at, track: {...}}` — same shape
 // whether they came from Liked Songs or a playlist) against what's already
 // stored by Spotify track ID, and appends whatever's new. Returns just the
-// newly-added songs.
+// newly-added songs. `added_at` on each item is deliberately ignored here —
+// it's a per-user fact recorded on playlist_tracks by the caller, not on
+// the shared songs row.
 const mergeTracks = (items) => {
   const existingIds = new Set(db.prepare('SELECT id FROM songs').all().map((r) => r.id));
   const newSongs = [];
@@ -64,7 +65,6 @@ const mergeTracks = (items) => {
         albumName: item.track.album.name,
         albumReleaseDate: item.track.album.release_date,
         albumType: item.track.album.album_type,
-        addedAt: item.added_at,
         isrc: item.track.external_ids?.isrc ?? null,
         durationMs: item.track.duration_ms,
         explicit: item.track.explicit ? 1 : 0,

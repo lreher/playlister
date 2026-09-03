@@ -16,6 +16,34 @@ const GENRES_SUBQUERY = `(
   JOIN artist_genres ag ON ag.artist_id = sa.artist_id WHERE sa.song_id = sd.id
 )`;
 
+// A song's "added" date for THIS user: the earliest date it entered any of
+// their playlists (their Liked Songs among them — it's a playlist here too).
+// Per-user by nature — the same track is liked/added on a different date by
+// each person — so it can't live on the shared songs row or the
+// song_details view; every read that sorts, filters, or buckets by "added"
+// threads a userId param through this instead. Takes one `?` (the user id).
+const USER_ADDED_AT_SUBQUERY = `(
+  SELECT MIN(pt.added_at) FROM playlist_tracks pt
+  JOIN playlists pl ON pl.id = pt.playlist_id
+  WHERE pt.song_id = sd.id AND pl.user_id = ?
+)`;
+
+// The same per-user "added" date as a standalone row source (one row per
+// song in the user's library, its value = first date that song entered any
+// of their playlists) — for the range/histogram reads that aggregate over
+// it rather than attaching it to a song_details row. Membership *is* the
+// FROM clause here, so no separate visibleToUser check is needed. The
+// `JOIN songs` keeps this in step with getSongs, which is `FROM songs`:
+// without it an orphaned playlist_tracks row (membership pointing at a
+// song_id absent from `songs` — the residue of an interrupted/older sync)
+// would inflate these aggregates past the visible song count. One `?`.
+const USER_ADDED_AT_ROWS = `(
+  SELECT MIN(pt.added_at) AS added_at FROM playlist_tracks pt
+  JOIN playlists pl ON pl.id = pt.playlist_id
+  JOIN songs s ON s.id = pt.song_id
+  WHERE pl.user_id = ? GROUP BY pt.song_id
+)`;
+
 // `artists`/`songs`/`song_artists`/`artist_genres` are a shared cache across
 // every user (see playlister_focus.md's "Data layer" section) — a song or
 // artist's own metadata doesn't depend on who's browsing. What's user-
@@ -105,12 +133,12 @@ function buildWhere(
     params.push(durationMax);
   }
   if (addedFrom) {
-    clauses.push('sd.added_at >= ?');
-    params.push(addedFrom);
+    clauses.push(`${USER_ADDED_AT_SUBQUERY} >= ?`);
+    params.push(userId, addedFrom);
   }
   if (addedTo) {
-    clauses.push('sd.added_at <= ?');
-    params.push(addedTo);
+    clauses.push(`${USER_ADDED_AT_SUBQUERY} <= ?`);
+    params.push(userId, addedTo);
   }
   // NULL naturally fails these comparisons in SQL — a song with no
   // resolved artist popularity is excluded exactly like the old
@@ -150,8 +178,9 @@ function rowToSong(row) {
   };
 }
 
-// Filters, sorts (newest-added first), and paginates the calling user's own
-// visible songs via real SQL against the song_details view.
+// Filters, sorts (newest-added first, by this user's own added date), and
+// paginates the calling user's own visible songs via real SQL against the
+// song_details view.
 function getSongs({ userId, limit = 50, offset = 0, ...filters }) {
   const { where, params } = buildWhere(filters, userId);
 
@@ -159,13 +188,14 @@ function getSongs({ userId, limit = 50, offset = 0, ...filters }) {
 
   const items = db
     .prepare(
-      `SELECT sd.*, ${ARTIST_NAMES_SUBQUERY} AS artist_names, ${GENRES_SUBQUERY} AS genres
+      `SELECT sd.*, ${USER_ADDED_AT_SUBQUERY} AS added_at,
+              ${ARTIST_NAMES_SUBQUERY} AS artist_names, ${GENRES_SUBQUERY} AS genres
        FROM song_details sd
        ${where}
-       ORDER BY sd.added_at DESC
+       ORDER BY added_at DESC
        LIMIT ? OFFSET ?`
     )
-    .all(...params, limit, offset)
+    .all(userId, ...params, limit, offset)
     .map(rowToSong);
 
   return { items, total, limit, offset };
@@ -212,7 +242,7 @@ function getFilterOptions(userId) {
     .prepare(`SELECT MIN(duration_ms) AS min, MAX(duration_ms) AS max FROM songs s WHERE ${visibleToUser('s.id')}`)
     .get(userId);
   const addedRange = db
-    .prepare(`SELECT MIN(added_at) AS min, MAX(added_at) AS max FROM songs s WHERE ${visibleToUser('s.id')}`)
+    .prepare(`SELECT MIN(added_at) AS min, MAX(added_at) AS max FROM ${USER_ADDED_AT_ROWS}`)
     .get(userId);
   const popularityRange = db
     .prepare(
@@ -269,8 +299,8 @@ function getStats(userId) {
     .all(userId);
   const likedCounts = db
     .prepare(
-      `SELECT substr(added_at, 1, 7) AS month, COUNT(*) AS count FROM songs s
-       WHERE ${visibleToUser('s.id')} GROUP BY month ORDER BY month`
+      `SELECT substr(added_at, 1, 7) AS month, COUNT(*) AS count FROM ${USER_ADDED_AT_ROWS}
+       GROUP BY month ORDER BY month`
     )
     .all(userId);
 

@@ -1,5 +1,10 @@
 // One-time migration: reads the old JSON files and populates the new
-// SQLite tables (db/database.js). Read-only against the JSON — they're
+// SQLite tables (db/database.js). Long since run everywhere and kept only
+// for history — it still writes a `songs.added_at` column that later
+// migrations dropped, so it would now fail if re-run. Not worth updating a
+// dead script; noted so it isn't a surprise.
+//
+// Read-only against the JSON — they're
 // left on disk untouched afterward, both as a natural backup and because
 // deleting hard-won data (the country/genre/popularity enrichment took
 // real API work) isn't this script's call to make. Idempotent — every

@@ -49,61 +49,52 @@ function createCircuitBreaker(threshold) {
 // Liked Songs
 // ---------------------------------------------------------------------------
 
-// This user's own already-recorded Liked Songs, from their pseudo-playlist —
-// NOT a global lookup. `songs` itself is a shared cache across every user,
-// so "does this song ID exist anywhere" is no longer the right question:
-// syncSongs()'s incremental stop-early check must be scoped to what *this*
-// user has already synced, or a brand-new user's walk could stop the moment
-// it hits some other user's already-cached song, silently truncating their
-// own history (see syncSongs' comment below).
-function getUserLikedSongIds(userId) {
-  const likedSongs = playlistsDb.getById(userId, playlistsDb.likedSongsId(userId));
-  return new Set(likedSongs ? likedSongs.tracks.map((t) => t.id) : []);
-}
-
-// Spotify's saved-tracks endpoint returns items newest-first, so this can
-// stop paginating the moment it hits a track this *user* already has
-// recorded — everything after that point is already known to them. Scoped
-// to the user's own Liked-Songs membership rather than the global `songs`
-// table: `songs` is a shared cache now, so a song being globally known
-// (synced by some other user) says nothing about whether *this* user has
-// walked past it yet. On a user's first-ever sync their own scope starts
-// empty, so this naturally walks their entire library, same as the old
-// single-tenant behavior did on a first run.
+// Walks this user's entire Liked Songs (Spotify's saved-tracks endpoint,
+// newest-first) every sync — no incremental stop-early. Liked Songs has no
+// snapshot_id to reconcile against, so it's treated as a snapshot-less
+// playlist: the full list is refetched and whole-replaced downstream
+// (syncPlaylists -> playlistsDb.set). That whole-replace is what detects
+// unlikes and records every like against *this* user's own date, rather
+// than deriving membership from whatever a shared cache happened not to
+// have yet. Returns the full membership list [{id, addedAt}] for that
+// replace; also feeds every track through mergeTracks to keep the shared
+// `songs` cache populated (cheap — mergeTracks dedupes against what's
+// already stored).
+//
+// The old per-user stop-early lived here to avoid re-walking ~100 pages
+// each run — it mattered when a full walk fired on every server restart,
+// but sync is per-login now (25-user cap), so a full walk per sync is an
+// acceptable cost for correct per-user membership.
 async function syncSongs(accessToken, userId) {
-  const existingIds = getUserLikedSongIds(userId);
-  const rawNewItems = [];
+  const items = [];
   let url = 'https://api.spotify.com/v1/me/tracks?limit=50';
-  let reachedKnown = false;
 
   usersDb.setSyncProgress(userId, 'songs', 0, null);
 
-  while (url && !reachedKnown) {
+  while (url) {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!res.ok) {
       throw new Error(`Spotify library fetch failed: ${res.status} ${await res.text()}`);
     }
 
     const data = await res.json();
-    for (const item of data.items) {
-      if (existingIds.has(item.track.id)) {
-        reachedKnown = true;
-        break;
-      }
-      rawNewItems.push(item);
-    }
-    // data.total is this user's whole Liked Songs count, not just what's
-    // new — the honest denominator for a brand-new user (existingIds
-    // starts empty, so "new" and "total" mean the same thing); a returning
-    // user's bar just moves fast and finishes early, which is accurate.
-    usersDb.setSyncProgress(userId, 'songs', rawNewItems.length, data.total);
-
-    url = reachedKnown ? null : data.next;
+    items.push(...data.items);
+    usersDb.setSyncProgress(userId, 'songs', items.length, data.total);
+    url = data.next;
   }
 
-  const newSongs = songsDb.mergeTracks(rawNewItems);
-  console.log(`[songs] sync complete: ${newSongs.length} new songs for this user`);
-  return newSongs;
+  songsDb.mergeTracks(items);
+
+  // Only tracks that actually landed in `songs` — mergeTracks skips
+  // Spotify's blank unlisted-track stubs (real id, empty name), and a
+  // playlist_tracks row pointing at a song_id absent from `songs` is
+  // silently invisible in song_details rather than a loud error.
+  const likedList = items
+    .filter((item) => item.track?.id && item.track?.name)
+    .map((item) => ({ id: item.track.id, addedAt: item.added_at }));
+
+  console.log(`[songs] sync complete: ${likedList.length} liked songs for this user`);
+  return likedList;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,36 +138,6 @@ async function fetchPlaylistTracks(accessToken, playlistId) {
   return items;
 }
 
-// Only ever runs once per user (the first-sync seed) — but on a large
-// library this walk alone was silently taking 30-40+ seconds with zero
-// progress reporting, which is exactly what "stuck at 47/47 for a long
-// time" was: the main playlist loop's progress had already hit 100%, and
-// nothing updated again until this entire unreported walk finished. Proven
-// with real timestamps from server logs, not guessed — see
-// playlister_focus.md.
-async function fetchAllLikedTrackIds(accessToken, userId) {
-  const tracks = [];
-  let url = 'https://api.spotify.com/v1/me/tracks?limit=50';
-
-  usersDb.setSyncProgress(userId, 'liked-songs-seed', 0, null);
-
-  while (url) {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (!res.ok) {
-      throw new Error(`Spotify library fetch failed: ${res.status} ${await res.text()}`);
-    }
-
-    const data = await res.json();
-    for (const item of data.items) {
-      if (item.track?.id) tracks.push({ id: item.track.id, addedAt: item.added_at });
-    }
-    usersDb.setSyncProgress(userId, 'liked-songs-seed', tracks.length, data.total);
-    url = data.next;
-  }
-
-  return tracks;
-}
-
 // Syncs every playlist this user owns or follows, plus a "liked-songs"
 // pseudo-playlist entry (so Liked Songs shows up in the same Playlist
 // filter as real playlists). Real playlists are reconciled via
@@ -187,11 +148,13 @@ async function fetchAllLikedTrackIds(accessToken, userId) {
 // db/playlists.js's set() for why that's scoped per-user, not a blanket
 // wipe.
 //
-// `newLikedSongs` is whatever syncSongs() just discovered this run — the
-// liked-songs pseudo-playlist is updated append-only from that (same
-// "detects additions, not removals" limitation as songs storage itself),
-// unlike real playlists which get correct full reconciliation.
-async function syncPlaylists(userId, accessToken, newLikedSongs) {
+// `likedList` is the user's full current Liked Songs ([{id, addedAt}]),
+// already walked by syncSongs this run — the pseudo-playlist is a plain
+// whole-replace from it, same as any snapshot-less playlist. No first-run
+// seed branch and no append-only path: both existed only because the old
+// syncSongs stopped early and so couldn't be trusted to have the whole
+// list.
+async function syncPlaylists(userId, accessToken, likedList) {
   const existing = playlistsDb.getAll(userId);
   const existingById = new Map(existing.map((p) => [p.id, p]));
 
@@ -226,31 +189,15 @@ async function syncPlaylists(userId, accessToken, newLikedSongs) {
   }
   usersDb.setSyncProgress(userId, 'playlists', remotePlaylists.length, remotePlaylists.length);
 
-  const likedSongsId = playlistsDb.likedSongsId(userId);
-  let likedSongs = existingById.get(likedSongsId);
-
-  if (!likedSongs) {
-    // First time this user has synced: their liked songs may span more
-    // history than syncSongs()'s incremental walk just reported. Seed the
-    // pseudo-playlist with a one-time full walk so it starts accurate,
-    // rather than silently starting from zero.
-    console.log('[playlists] seeding Liked Songs pseudo-playlist (one-time full walk)');
-    likedSongs = {
-      id: likedSongsId,
-      name: 'Liked Songs',
-      ownerName: null,
-      public: false,
-      collaborative: false,
-      snapshotId: null,
-      tracks: await fetchAllLikedTrackIds(accessToken, userId),
-    };
-  } else if (newLikedSongs.length > 0) {
-    likedSongs.tracks = [
-      ...newLikedSongs.map((s) => ({ id: s.id, addedAt: s.addedAt })),
-      ...likedSongs.tracks,
-    ];
-  }
-  updated.unshift(likedSongs);
+  updated.unshift({
+    id: playlistsDb.likedSongsId(userId),
+    name: 'Liked Songs',
+    ownerName: null,
+    public: false,
+    collaborative: false,
+    snapshotId: null,
+    tracks: likedList,
+  });
 
   playlistsDb.set(userId, updated);
   console.log(`[playlists] sync complete: ${changedCount}/${remotePlaylists.length} playlists refreshed`);
@@ -547,10 +494,10 @@ async function runFastSync(userId) {
   }
 
   console.log(`== Syncing liked songs (user ${userId}) ==`);
-  const newLikedSongs = await syncSongs(accessToken, userId);
+  const likedList = await syncSongs(accessToken, userId);
 
   console.log('== Syncing playlists ==');
-  await syncPlaylists(userId, accessToken, newLikedSongs);
+  await syncPlaylists(userId, accessToken, likedList);
 
   // Local only, no network — cheap enough to run inline here rather than
   // deferring it to the slow phase.
