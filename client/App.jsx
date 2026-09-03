@@ -19,6 +19,20 @@ const SYNC_PHASE_LABELS = {
   details: 'Resolving genres and popularity',
 };
 
+// current/total known only once a phase's first poll comes back — no
+// percent before that (a phase can also legitimately report total: null).
+const syncPct = (progress) =>
+  progress?.total > 0 ? Math.min(100, Math.round((progress.current / progress.total) * 100)) : null;
+
+// "Fetching your songs — 1700/5045 (34%)" once counts are known, just the
+// phase label before that. Shared by the blocking first-sync screen and
+// the header indicator for a background/manual sync.
+const syncProgressLabel = (progress) => {
+  const phase = SYNC_PHASE_LABELS[progress?.phase] ?? 'Syncing…';
+  const pct = syncPct(progress);
+  return pct !== null ? `${phase} — ${progress.current}/${progress.total} (${pct}%)` : phase;
+};
+
 // The country-resolution cascade (scripts/sync.js's resolveCountries) —
 // cheapest/most-accurate source first. Some artists never resolve through
 // any of these (genuinely obscure/independent, absent from every free
@@ -207,21 +221,14 @@ export function App() {
   }, []);
 
   if (status === 'loading' || status === 'checking-sync') {
-    // total is nullable (the songs phase doesn't know it until its first
-    // page comes back) — no percent/bar until there's something real to
-    // show, rather than a misleading 0%.
-    const pct =
-      syncProgress?.total > 0 ? Math.min(100, Math.round((syncProgress.current / syncProgress.total) * 100)) : null;
+    const pct = syncPct(syncProgress);
 
     return (
       <div className="login-container">
         <p>{status === 'checking-sync' ? 'Building your library…' : 'Loading…'}</p>
         {syncProgress && (
           <div className="sync-progress">
-            <p className="sync-progress-label">
-              {SYNC_PHASE_LABELS[syncProgress.phase] ?? 'Working…'}
-              {pct !== null && ` — ${syncProgress.current}/${syncProgress.total} (${pct}%)`}
-            </p>
+            <p className="sync-progress-label">{syncProgressLabel(syncProgress)}</p>
             {pct !== null && (
               <div className="sync-progress-bar">
                 <div className="sync-progress-fill" style={{ width: `${pct}%` }} />
@@ -354,7 +361,7 @@ export function App() {
           {renderEnrichmentStatus()}
           {syncing && (
             <span className="sync-status-text">
-              {syncProgress ? SYNC_PHASE_LABELS[syncProgress.phase] ?? 'Syncing…' : 'Syncing…'}
+              {syncProgress ? syncProgressLabel(syncProgress) : 'Syncing…'}
             </span>
           )}
           {bgSyncError && !syncing && (
