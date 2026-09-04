@@ -1,8 +1,23 @@
 /* This chart's own colors — decoupled from the global theme on purpose:
    fidgeting with this chart's look shouldn't drag the whole app along with
    it. Not shared with any other chart, so they live here rather than in
-   client/index.css. */
+   client/index.css. One set per switchable theme (see client/theme.js). */
 :root {
-  --chart-country-color: #e0339bb0; /* the bubble itself (magenta, ~70% alpha) */
-  --chart-country-emphasis-color: #f26a3a; /* the bubble on hover (orange) */
+  --chart-country-color: #e0339bb0; /* studio: magenta bubble, ~70% alpha */
+  --chart-country-emphasis-color: #f26a3a; /* studio: orange on hover */
+}
+
+:root[data-theme='classic'] {
+  --chart-country-color: #539a6c89; /* classic: muted green */
+  --chart-country-emphasis-color: #539a6cb6;
+}
+
+:root[data-theme='nicolas'] {
+  --chart-country-color: #ff1493c0; /* nicolas: HOT PINK!!! */
+  --chart-country-emphasis-color: #7cff00;
+}
+
+:root[data-theme='clean'] {
+  --chart-country-color: #4a63d8b0; /* clean: indigo */
+  --chart-country-emphasis-color: #f0913a;
 }

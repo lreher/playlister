@@ -231,13 +231,13 @@ artists, or "filters" as a domain:
 
 ```
 client/
-  App.jsx          # shell: tab state (list/dashboards), dispatches to pages/
+  App.jsx          # shell: tab state (list/dashboards), theme state, dispatches to pages/
   api.js            # fetch wrappers: getFilters(), getSongs(), getStats(), getWorldGeoJson()
-  index.jsx          # entry: render(<App/>, #root)
+  index.jsx          # entry: applyTheme(getTheme()) then render(<App/>, #root)
+  theme.js            # the 4-way theme switcher — see "Visual themes"
   utils/format.js      # countryLabel, formatDuration, formatDateShort
   themes/
-    globalTheme.js      # base palette, kept in sync by hand with style.css's :root
-    chartTheme.js         # globalTheme + chart-only `emphasis` + baseChartOption()
+    chartTheme.js         # getChartTheme() (reads :root vars fresh), barGradient(), baseChartOption()
   components/
     charts/               # generic echarts primitives, no domain knowledge
       BarChart/, WorldMap/
@@ -272,42 +272,90 @@ client/
   instances on every tab switch.
 - **One real theme default, not five accidental copies**: chart color used to be a
   `COLOR`/`EMPHASIS_COLOR` const duplicated identically in all five dashboard files —
-  looked configurable but wasn't really, since nothing ever diverged. Now `BarChart`/
-  `WorldMap` default `color`/`emphasisColor` from `themes/chartTheme.js`; a dashboard file
-  only declares its own override when it actually wants to differ from the shared theme.
-  Taken further in the Sep 2026 restyle (see "Visual restyle" below): the four bar charts
-  now pass *no* color at all — they all use `chartTheme.barGradient` (a purple→magenta
-  vertical gradient), and their per-chart `colors.css` files were deleted. Only
-  `CountryMap` still keeps its own `colors.css` (the map bubble is genuinely its own
-  thing).
+  looked configurable but wasn't really, since nothing ever diverged. Now the four bar
+  charts pass *no* colour at all — they all use `chartTheme.barGradient(theme)` — and
+  only `CountryMap` keeps its own `colors.css` (the map bubble is genuinely its own
+  thing). See "Visual themes" for `getChartTheme()` and how a theme switch recolours the
+  charts.
 
-## Visual restyle — navy + neon-gradient dashboard look (Sep 2026)
+## Visual themes — a 4-way switcher (Sep 2026)
 
-Lucas handed over a PNG of a Looker-Studio / GA4-style dark dashboard and asked for that
-look. A vibe pass, not an architectural one (see musings.md) — first cut built and
-iterated on from feedback rather than planned upfront.
+Started as one restyle (Lucas handed over a Looker-Studio / GA4 PNG), grew into a
+hand-switchable theme system after he asked for a toggle. All vibe-pass work — first cuts
+built and iterated on from feedback, not planned upfront (see musings.md). **The whole
+thing is CSS + one tiny JS module; no backend involvement.**
 
-- **Palette lives entirely in `client/index.css`'s `:root`** — the restyle is mostly new
-  values there. `--bg` deep navy `#16223f`, `--bg-elevated` `#1e2b4c` (card surface),
-  `--border` `#2c3d63`, `--text` `#eef1f9`, `--text-muted` `#8a99bf`, `--accent` magenta
-  `#e0389d` (replaced Spotify green as the single accent), plus three gradient stops
-  `--grad-purple` / `--grad-magenta` / `--grad-orange`. `globalTheme.js` / `chartTheme.js`
-  read these at load time exactly as before — no change to that plumbing.
-- **Cards**: `.chart-container`, `#app` (the List panel), and `#filters` share one
-  card treatment (elevated bg + hairline border + soft shadow + radius). `#app` gained
-  padding so the toolbar/table/pagination sit inside one panel; `.chart-container` did
-  **not** get padding (echarts.init sizes the canvas to clientWidth/Height including
-  padding — inner spacing comes from the chart's own `grid` config instead). `SongTable`
-  now wraps its `<table>` in `.songs-table-wrap` (`overflow-x: auto`).
-- **Charts**: `chartTheme.js` exports `barGradient` (a plain `{type:'linear',…}` object,
-  vertical purple→magenta). `BarChart`'s default `color` is now that gradient;
-  `emphasisColor` defaults to orange (`--chart-emphasis`). The four bar-chart components
-  dropped their `color`/`emphasisColor` props + `colors.css` imports (4 files deleted) —
-  they all look the same in the reference, so per-chart hues were pointless divergence.
-- **Font**: Roboto (added to `static/index.html`), Inter kept as the fallback.
-- Accent-driven bits (buttons, tabs, pagination active state, login button, sync progress
-  bar) use the magenta accent or the full gradient; the old `color: #000000` (readable on
-  green) became `--accent-contrast` (`#ffffff`).
+**The four themes** (toggle order = array order in `client/theme.js`):
+- **Clean** — *the default.* Light. Soft pale gradient page (`linear-gradient` blue→
+  lavender→mint, `fixed`) behind **frosted translucent cards** (`rgba(255,255,255,0.15)` +
+  `backdrop-filter: blur(20px) saturate(150%)`). Indigo accent `#4a63d8`, system font
+  (`-apple-system`/Inter). Buttons: faint tinted fill + a solid 1.5px accent border, go
+  solid on hover (one `background`/`color` transition, nothing else — an earlier
+  "liquid glass" attempt with blur/lift/multi-inset-shadows was rejected as "awful").
+  `color-scheme: light`.
+- **Studio** — the navy + neon-gradient dashboard look. `--bg` `#16223f`, magenta accent
+  `#e0389d`, purple→magenta chart gradient, Roboto. **This is the bare `:root`** (see
+  below).
+- **Classic** — the original: near-black `#121212`, Spotify green `#1db954`, Inter, no
+  card borders/shadows (`--panel-*` tokens go transparent/0).
+- **Nicolas** — a deliberate r/CrappyDesign "OMG TRUE COMIC SANS EXPERIENCE" tribute:
+  mint bg, **Comic Sans** (Comic Neue loaded from Google Fonts as the portable fallback),
+  hot-pink accent, glowing + `rotate(-2deg)` title, clashing neon everywhere, rainbow
+  `--accent-fill`, hot-pink table headers with yellow text. Table body text kept dark so
+  it's still usable.
+
+**How theming works:**
+- `client/theme.js` — `THEMES` (id + label, order = toggle order), `getTheme()` /
+  `setTheme()` / `applyTheme()`, persisted to `localStorage['playlister-theme']`.
+  `DEFAULT = 'clean'`. **`applyTheme` special-cases `'studio'` as the *absence* of the
+  `data-theme` attribute** (its palette is the bare `:root`); every other theme sets
+  `<html data-theme="…">`. `client/index.jsx` calls `applyTheme(getTheme())` before
+  `render()`, and `static/index.html` hard-codes `<html data-theme="clean">` so a cold
+  load paints Clean with no flash before the bundle runs.
+- `client/index.css` — bare `:root` = the Studio palette **plus a set of theme-varying
+  tokens**: `--panel-bg/-border/-shadow/-pad-app/-pad-filters`, `--chart-border`,
+  `--row-hover`, `--heading-color/-weight`, `--body-font`, `--accent-fill`, `--grad-*`,
+  `--chart-emphasis`, `--accent-contrast`. A theme block (`:root[data-theme='…']`) is
+  mostly just a different set of those, plus a handful of theme-scoped decorative rules
+  where a var can't reach (Nicolas's glow/tilt/comic-sans, Clean's glassy card + button
+  rules, per-theme `.theme-toggle` border colour).
+- **`client/themes/globalTheme.js` deleted.** `chartTheme.js` is now functions —
+  `getChartTheme()` reads the CSS vars *fresh on every call*, plus `barGradient(theme)`
+  and `baseChartOption(theme)`. `BarChart` / `WorldMap` call `getChartTheme()` inside
+  their `useEffect`, so a theme switch recolours them **on the next `<Dashboards>`
+  remount** — and `App.jsx`'s `<Dashboards key={`${dataVersion}:${theme}`}>` now remounts
+  on a theme change. (CSS-only surfaces recolour instantly, no remount.) The four
+  bar-chart components still pass no colour — one shared `barGradient` — and only
+  `CountryMap` keeps its own `colors.css` (now with a per-theme block each).
+
+**Layout changes that came with it:**
+- The **theme toggle** (`.theme-toggle`, a segmented pill) sits in the tab bar's
+  `.tabs-status`, where Sync/Delete used to be. Enrichment status stays there too.
+- **Sync + Delete moved** out of the tab bar into a `.table-footer` (a `1fr auto 1fr`
+  grid: empty spacer | centred pagination | right-aligned controls). Rendered by
+  `App.renderLibraryControls()` and passed down `SongList` → `SongTable`. List tab only
+  (no toolbar elsewhere). Delete is no longer red — all three of Create Playlist / Sync /
+  Delete are `.page-button.filled`, styled per theme. The footer renders through
+  loading/error too, so Delete stays reachable if the table fails.
+- `#app` (the List panel) and `#filters` became cards; `SongTable` wraps its `<table>` in
+  `.songs-table-wrap` (`overflow-x: auto`). `.chart-container` gets no padding —
+  `echarts.init` sizes the canvas to clientWidth/Height *including* padding, so inner
+  spacing is the chart's own `grid` config.
+
+**Two real CSS bugs found and fixed along the way:**
+- **Reset Filters had no hover contrast** in some themes — it was inheriting
+  `.page-button:hover`'s accent-bg + accent-text. Now an explicit ghost button
+  (`.reset-filters-button` + `.reset-filters-button:hover:not(:disabled)` — the
+  `:not(:disabled)` is there purely to match `.page-button:hover`'s specificity so it
+  wins by source order).
+- **The dual-handle range slider drew a line across its low thumb.** Two overlaid
+  `<input type=range>` each render a `::-webkit-slider-runnable-track`; the second (top)
+  one's line painted over the first's thumb — invisible in the dark themes, glaring in
+  Clean (near-white track vs indigo thumb). Fix:
+  `.range-slider-track input + input::-webkit-slider-runnable-track { background: transparent }`
+  (only the first input's track shows) + an explicit `height: 20px` on
+  `.range-slider-input` (it was unset, and rendered inconsistently under
+  `color-scheme: light`).
 
 ## Dashboards tab
 
@@ -868,10 +916,10 @@ is more complete than the country rule).
 ## Other design decisions made along the way
 
 - Barebones philosophy: no framework, `find-my-way` router only, vanilla frontend JS.
-- Dark theme. **Restyled Sep 2026** (see "Visual restyle" below) — was Spotify green
-  (`#1db954`) + near-black + Inter; now deep navy (`#16223f`) + a magenta accent
-  (`#e0389d`) + a purple→magenta→orange chart gradient + Roboto, to match a
-  Looker-Studio-style reference dashboard Lucas handed over.
+- **Four hand-switchable themes** (Sep 2026, see "Visual themes"): **Clean** (light,
+  frosted-glass, the default) · **Studio** (navy + neon) · **Classic** (the original
+  near-black + Spotify green) · **Nicolas** (a Comic Sans joke). Toggle in the tab bar,
+  choice persisted to `localStorage`.
 - Filters built: genre, decade (not individual year — 72 years was too many for a
   dropdown), country, album type, artist, plus **dual-handle range sliders** (hand-built,
   two overlaid native `<input type=range>`, no library) for duration, liked-date, and
@@ -1108,10 +1156,12 @@ other clone that currently exists.
 
 - **Per-user "Added" date fix — deployed and live** (Sep 3). See "Per-user 'Added' date"
   above. Still wants a real login by Lucas to confirm the authed path end to end.
-- **Conditional login sync + Sync button — built and locally verified, NOT yet deployed.**
-  Ships in the normal `git push` → `npm run deploy` (the `last_synced_at` column
-  self-heals + backfills on boot, no manual migration step). See "Login sync is
+- **Conditional login sync + Sync button — deployed** (Sep 3). See "Login sync is
   conditional" above.
+- **Visual themes (4-way switcher) — deployed** (Sep 3). See "Visual themes" above. All
+  vibe iteration; Clean is the default. No backend changes, so the only real risk was
+  CSS/native-control quirks (the two fixed under "Visual themes"). Worth an eyeball on
+  each theme after deploy since the local checks were the browser only.
 - **Multi-tenancy is deployed and live**, and real second/third users have now logged in
   on the deployed app (that's how the "Added" date bug surfaced). Cross-tenant isolation
   held for real identities. Still worth a deliberate side-by-side two-account pass on the
@@ -1153,6 +1203,9 @@ other clone that currently exists.
 - **Per-user "Added" date** — **done, deployed** (Sep 3 2026). Liked Songs is now a
   fully-reconciled snapshot-less playlist; `songs.added_at` dropped; reads derive "Added"
   per-user from `playlist_tracks`. See "Per-user 'Added' date" above.
-- **Conditional login sync + Sync button** — **built, verified locally, not yet deployed**
-  (Sep 3 2026). Login only blocks on a genuine first sync; returning users go straight in;
-  manual Sync button + a 24h-stale auto-refresh. See "Login sync is conditional" above.
+- **Conditional login sync + Sync button** — **done, deployed** (Sep 3 2026). Login only
+  blocks on a genuine first sync; returning users go straight in; manual Sync button + a
+  24h-stale auto-refresh. See "Login sync is conditional" above.
+- **Visual themes (4-way switcher)** — **done, deployed** (Sep 3 2026). Clean (default) /
+  Studio / Classic / Nicolas, toggle in the tab bar, persisted to `localStorage`. See
+  "Visual themes" above.

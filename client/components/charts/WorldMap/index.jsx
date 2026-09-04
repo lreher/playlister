@@ -5,20 +5,19 @@
 // component state. What each point *means* (country lookup, tooltip
 // wording, click behavior) is the caller's job, not this primitive's.
 import { useEffect, useRef } from 'preact/hooks';
-import { chartTheme } from '../../../themes/chartTheme';
+import { getChartTheme } from '../../../themes/chartTheme';
 import { getWorldGeoJson } from '../../../api';
 
 let worldMapRegistered = false;
 
 export function WorldMap({
   points,
-  // Default: the shared theme colors — omit any of these to revert just
-  // that one to the theme. `color`/`emphasisColor` can also be an
-  // echarts-style callback `(params) => color` (params.value,
-  // params.dataIndex, ...) instead of a flat string, for a color that
-  // depends on each point's own data.
-  color = chartTheme.accent, // the bubble itself
-  emphasisColor = chartTheme.emphasis, // the bubble on hover
+  // Omit `color`/`emphasisColor` to fall back to the theme accent/emphasis.
+  // Either can also be an echarts-style callback `(params) => color`
+  // (params.value, params.dataIndex, ...) instead of a flat string, for a
+  // color that depends on each point's own data.
+  color, // the bubble itself
+  emphasisColor, // the bubble on hover
   formatTooltip = (p) => `${p.name}: ${p.value[2]}`,
   onPointClick,
 }) {
@@ -36,6 +35,9 @@ export function WorldMap({
         worldMapRegistered = true;
       }
 
+      const chartTheme = getChartTheme();
+      const bubbleColor = color ?? chartTheme.accent;
+      const bubbleEmphasis = emphasisColor ?? chartTheme.emphasis;
       chart = echarts.init(containerRef.current);
       chart.setOption({
         backgroundColor: 'transparent',
@@ -73,14 +75,14 @@ export function WorldMap({
             // sqrt scaling keeps bubble *area* (not radius) proportional to
             // magnitude, which is what the eye actually perceives correctly.
             symbolSize: (val) => Math.sqrt(val[2]) * 3 + 4,
-            itemStyle: { color, opacity: 0.7 },
+            itemStyle: { color: bubbleColor, opacity: 0.7 },
             cursor: onPointClick ? 'pointer' : 'default',
             // scale: false — the tooltip already names the country on
             // hover, so no on-map label either; and no size-grow on top of
             // our own already-large sqrt-scaled sizing.
             emphasis: {
               scale: false,
-              itemStyle: { color: emphasisColor, opacity: 1 },
+              itemStyle: { color: bubbleEmphasis, opacity: 1 },
             },
           },
         ],

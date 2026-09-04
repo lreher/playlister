@@ -4,6 +4,7 @@ import { SongList } from './pages/songList';
 import { Dashboards } from './pages/dashboards';
 import { Events } from './pages/events';
 import { getMe, getSyncStatus, getEnrichmentStatus, wipeDatabase, requestSync } from './api';
+import { THEMES, getTheme, setTheme } from './theme';
 
 const PATH_FOR_TAB = { list: '/', dashboards: '/dashboards', events: '/events' };
 const TAB_FOR_PATH = { '/': 'list', '/dashboards': 'dashboards', '/events': 'events' };
@@ -67,6 +68,9 @@ export function App() {
   // Bumped when a background/manual sync completes — threaded into the List
   // and Dashboards so they re-fetch against the updated library.
   const [dataVersion, setDataVersion] = useState(0);
+  // 'studio' | 'classic' — index.jsx already applied the saved choice
+  // before first paint; this just mirrors it into render state.
+  const [theme, setThemeState] = useState(getTheme);
 
   // On mount: who is this, and is their library already built? Every
   // /api/* route requires a real session, so this is the one place that
@@ -307,6 +311,16 @@ export function App() {
       });
   }
 
+  // Switches the visual theme. index.css does the actual restyle via a
+  // [data-theme] attribute (set by setTheme); the state bump re-keys
+  // <Dashboards> so its echarts instances rebuild with the new palette
+  // (CSS-only surfaces recolor on their own, no remount needed).
+  function switchTheme(id) {
+    if (id === theme) return;
+    setTheme(id);
+    setThemeState(id);
+  }
+
   // Manual "sync now." Sets `syncing` optimistically so the poll effect
   // starts immediately; the server has already flipped sync_status to
   // 'syncing' (or was already syncing, in which case this is a no-op).
@@ -336,6 +350,32 @@ export function App() {
     switchTab('list');
   }
 
+  // Sync + Delete — handed to SongList, which drops them at the right end
+  // of the bottom pagination row. List tab only. Filled (same look as
+  // Create Playlist), not the outline style.
+  function renderLibraryControls() {
+    return (
+      <div className="library-controls">
+        <button className="page-button filled" onClick={handleSync} disabled={syncing}>
+          {syncing ? 'Syncing…' : 'Sync'}
+        </button>
+        <button className="page-button filled" onClick={handleDelete} disabled={deleting}>
+          {deleting ? 'Deleting…' : 'Delete'}
+        </button>
+        {syncing && (
+          <span className="sync-status-text">
+            {syncProgress ? syncProgressLabel(syncProgress) : 'Syncing…'}
+          </span>
+        )}
+        {bgSyncError && !syncing && (
+          <span className="sync-status-text failed" title={bgSyncError}>
+            Sync failed
+          </span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="app-header">
@@ -359,22 +399,17 @@ export function App() {
         </button>
         <div className="tabs-status">
           {renderEnrichmentStatus()}
-          {syncing && (
-            <span className="sync-status-text">
-              {syncProgress ? syncProgressLabel(syncProgress) : 'Syncing…'}
-            </span>
-          )}
-          {bgSyncError && !syncing && (
-            <span className="sync-status-text failed" title={bgSyncError}>
-              Sync failed
-            </span>
-          )}
-          <button className="page-button" onClick={handleSync} disabled={syncing}>
-            {syncing ? 'Syncing…' : 'Sync'}
-          </button>
-          <button className="page-button danger" onClick={handleDelete} disabled={deleting}>
-            {deleting ? 'Deleting…' : 'Delete'}
-          </button>
+          <div className="theme-toggle" role="group" aria-label="Theme">
+            {THEMES.map((t) => (
+              <button
+                key={t.id}
+                className={theme === t.id ? 'active' : ''}
+                onClick={() => switchTheme(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -384,11 +419,14 @@ export function App() {
           onChange={setFilters}
           onReset={() => setFilters(EMPTY_FILTERS)}
           dataVersion={dataVersion}
+          controls={renderLibraryControls()}
         />
       </div>
 
       <div style={{ display: tab === 'dashboards' ? '' : 'none' }}>
-        {dashboardsVisited && <Dashboards key={dataVersion} onFilterClick={applyDashboardFilter} />}
+        {dashboardsVisited && (
+          <Dashboards key={`${dataVersion}:${theme}`} onFilterClick={applyDashboardFilter} />
+        )}
       </div>
 
       <div style={{ display: tab === 'events' ? '' : 'none' }}>

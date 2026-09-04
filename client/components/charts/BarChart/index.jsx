@@ -1,47 +1,50 @@
 // Generic echarts bar chart primitive. categories/values are whole-library
 // stats fetched once by Dashboards.jsx — stable for this component's
 // lifetime, so the chart is built once (empty deps) and just resized on
-// window resize.
+// window resize. Theme is read fresh at build time (getChartTheme), so a
+// theme switch recolors it on the next Dashboards remount.
 import { useEffect, useRef } from 'preact/hooks';
-import { chartTheme, baseChartOption, barGradient } from '../../../themes/chartTheme';
+import { getChartTheme, baseChartOption, barGradient } from '../../../themes/chartTheme';
 
 export function BarChart({
   categories,
   values,
   rotateLabels,
-  // Default: the shared purple->magenta gradient (chartTheme.barGradient),
-  // orange on hover — omit these two props entirely to revert a chart to
-  // it. Either can also be an echarts-style callback `(params) => color`
-  // (params.value, params.dataIndex, ...) instead of a flat string/gradient,
-  // for a color that depends on each bar's own data — e.g. a chart that
-  // gets redder the higher its value.
-  color = barGradient,
-  emphasisColor = chartTheme.emphasis,
+  // Omit both to get the shared theme look: a purple->magenta gradient
+  // fill (flat green in the classic theme), orange on hover. Either can
+  // also be an echarts-style callback `(params) => color` (params.value,
+  // params.dataIndex, ...) for a color that depends on each bar's own data.
+  color,
+  emphasisColor,
   onClickCategory,
 }) {
   const containerRef = useRef(null);
 
   useEffect(() => {
+    const theme = getChartTheme();
+    const fill = color ?? barGradient(theme);
+    const emphasisFill = emphasisColor ?? theme.emphasis;
+
     const chart = echarts.init(containerRef.current);
     chart.setOption({
-      ...baseChartOption(),
+      ...baseChartOption(theme),
       xAxis: {
         type: 'category',
         data: categories,
-        axisLabel: { rotate: rotateLabels ? 60 : 0, color: chartTheme.textMuted, fontSize: 10 },
-        axisLine: { lineStyle: { color: chartTheme.border } },
+        axisLabel: { rotate: rotateLabels ? 60 : 0, color: theme.textMuted, fontSize: 10 },
+        axisLine: { lineStyle: { color: theme.border } },
       },
       yAxis: {
         type: 'value',
-        axisLabel: { color: chartTheme.textMuted },
-        splitLine: { lineStyle: { color: chartTheme.border } },
+        axisLabel: { color: theme.textMuted },
+        splitLine: { lineStyle: { color: theme.border } },
       },
       series: [
         {
           type: 'bar',
           data: values,
-          itemStyle: { color },
-          emphasis: { itemStyle: { color: emphasisColor } },
+          itemStyle: { color: fill },
+          emphasis: { itemStyle: { color: emphasisFill } },
           cursor: onClickCategory ? 'pointer' : 'default',
         },
       ],

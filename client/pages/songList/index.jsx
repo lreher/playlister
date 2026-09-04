@@ -3,17 +3,19 @@
 // just renders it. `dataVersion` bumps when a sync finishes — threaded into
 // both children so they re-fetch against the freshly-updated library
 // without a full remount (which would drop the uncontrolled filter inputs).
+// `controls` is App's library-actions cluster (Create Playlist / Sync /
+// Delete), rendered into the table toolbar.
 import { Filters } from './Filters';
 import { SongTable } from './SongTable';
 
-export function SongList({ filters, onChange, onReset, dataVersion }) {
+export function SongList({ filters, onChange, onReset, dataVersion, controls }) {
   return (
     <>
       <div id="filters">
         <Filters filters={filters} onChange={onChange} onReset={onReset} dataVersion={dataVersion} />
       </div>
       <div id="app">
-        <SongTable filters={filters} dataVersion={dataVersion} />
+        <SongTable filters={filters} dataVersion={dataVersion} controls={controls} />
       </div>
     </>
   );

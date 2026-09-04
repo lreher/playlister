@@ -9,7 +9,7 @@ import { Pagination } from '../../../components/Pagination';
 const LIMIT = 50;
 const COLUMNS = ['Name', 'Artist(s)', 'Album', 'Year', 'Added', 'Country', 'Genres'];
 
-export function SongTable({ filters, dataVersion }) {
+export function SongTable({ filters, dataVersion, controls }) {
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState(null);
   const [error, setError] = useState(null);
@@ -32,56 +32,65 @@ export function SongTable({ filters, dataVersion }) {
     };
   }, [filters, offset, dataVersion]);
 
-  if (error) return <div>Error: {error}</div>;
-  if (!page) return <div>Loading...</div>;
-
-  const from = page.total === 0 ? 0 : page.offset + 1;
-  const to = Math.min(page.offset + page.items.length, page.total);
+  // Toolbar (and the library-actions `controls` in it) stays mounted
+  // through loading/error — only the table body + pagination depend on a
+  // loaded page.
+  const from = page && (page.total === 0 ? 0 : page.offset + 1);
+  const to = page && Math.min(page.offset + page.items.length, page.total);
 
   return (
     <>
       <div className="toolbar">
         <button
           className="page-button"
-          disabled={page.offset === 0}
-          onClick={() => setOffset(Math.max(0, page.offset - LIMIT))}
+          disabled={!page || page.offset === 0}
+          onClick={() => page && setOffset(Math.max(0, page.offset - LIMIT))}
         >
           Previous
         </button>
         <button
           className="page-button"
-          disabled={page.offset + page.items.length >= page.total}
-          onClick={() => setOffset(page.offset + LIMIT)}
+          disabled={!page || page.offset + page.items.length >= page.total}
+          onClick={() => page && setOffset(page.offset + LIMIT)}
         >
           Next
         </button>
         <p className="status">
-          {from}-{to} of {page.total}
+          {error ? 'Could not load songs' : page ? `${from}-${to} of ${page.total}` : 'Loading…'}
         </p>
         {/* Stub — real playlist creation/export is a likely next step. */}
-        <button className="page-button create-playlist-button">Create Playlist</button>
+        <button className="page-button filled create-playlist-button">Create Playlist</button>
       </div>
-      <div className="songs-table-wrap">
-        <table className="songs-table">
-          <tr>
-            {COLUMNS.map((label) => (
-              <th key={label}>{label}</th>
-            ))}
-          </tr>
-          {page.items.map((song) => (
-            <tr key={song.id}>
-              <td>{song.name}</td>
-              <td>{song.artists}</td>
-              <td>{song.album}</td>
-              <td>{song.year ?? '—'}</td>
-              <td>{new Date(song.addedAt).toLocaleDateString()}</td>
-              <td>{countryLabel(song.country)}</td>
-              <td>{song.genres.length ? song.genres.join(', ') : '—'}</td>
+      {error && <div className="table-message">Error: {error}</div>}
+      {!error && !page && <div className="table-message">Loading…</div>}
+      {page && (
+        <div className="songs-table-wrap">
+          <table className="songs-table">
+            <tr>
+              {COLUMNS.map((label) => (
+                <th key={label}>{label}</th>
+              ))}
             </tr>
-          ))}
-        </table>
+            {page.items.map((song) => (
+              <tr key={song.id}>
+                <td>{song.name}</td>
+                <td>{song.artists}</td>
+                <td>{song.album}</td>
+                <td>{song.year ?? '—'}</td>
+                <td>{new Date(song.addedAt).toLocaleDateString()}</td>
+                <td>{countryLabel(song.country)}</td>
+                <td>{song.genres.length ? song.genres.join(', ') : '—'}</td>
+              </tr>
+            ))}
+          </table>
+        </div>
+      )}
+      <div className="table-footer">
+        {page && (
+          <Pagination offset={page.offset} limit={LIMIT} total={page.total} onOffsetChange={setOffset} />
+        )}
+        {controls}
       </div>
-      <Pagination offset={page.offset} limit={LIMIT} total={page.total} onOffsetChange={setOffset} />
     </>
   );
 }

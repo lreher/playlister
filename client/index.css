@@ -1,7 +1,10 @@
 :root {
-  /* Deep-navy dashboard palette (see the reference this was styled from —
-     GA4 / Looker Studio dark). One accent (magenta) instead of the old
-     Spotify green; charts use the purple->magenta->orange gradient below. */
+  color-scheme: dark;
+
+  /* --- Studio: deep-navy dashboard palette (default). Styled from a
+     Looker-Studio / GA4 reference. The classic (original) theme overrides
+     these under [data-theme="classic"] below; client/theme.js flips the
+     attribute. --- */
   --bg: #16223f;
   --bg-elevated: #1e2b4c;
   --text: #eef1f9;
@@ -10,15 +13,254 @@
   --accent-contrast: #ffffff;
   --border: #2c3d63;
 
-  /* The neon gradient. Charts read these via client/utils/cssVar.js at load
-     time — no DOM element uses them directly, they live here so they get a
-     color picker instead of being buried in JS. */
+  /* The neon chart gradient. Charts read these via client/utils/cssVar.js;
+     no DOM element uses them directly, they live here for the color picker. */
   --grad-purple: #a64fd6;
   --grad-magenta: #e0339b;
   --grad-orange: #f26a3a;
-
-  /* A chart's hover/click color. */
   --chart-emphasis: #f26a3a;
+
+  /* Theme-varying surface tokens — a theme is mostly just a different set
+     of these. Panels (the List/filter cards) are surfaces in Studio and
+     invisible in Classic; the chart container keeps its own bg either way. */
+  --panel-bg: var(--bg-elevated);
+  --panel-border: var(--border);
+  --panel-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --panel-pad-app: 1rem 1.25rem 0.5rem;
+  --panel-pad-filters: 1rem;
+  --chart-border: var(--border);
+  --row-hover: rgba(224, 56, 157, 0.08);
+  --heading-color: var(--text);
+  --heading-weight: 600;
+  --body-font: 'Roboto', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --accent-fill: linear-gradient(120deg, var(--grad-purple), var(--grad-magenta) 60%, var(--grad-orange));
+}
+
+:root[data-theme='classic'] {
+  --bg: #121212;
+  --bg-elevated: #1a1a1a;
+  --text: #ffffff;
+  --text-muted: #b3b3b3;
+  --accent: #1db954;
+  --accent-contrast: #000000;
+  --border: #282828;
+
+  /* Classic had no gradient — two identical stops render as a flat fill. */
+  --grad-purple: #1db954;
+  --grad-magenta: #1db954;
+  --grad-orange: #f5a623;
+  --chart-emphasis: #f5a623;
+
+  --panel-bg: transparent;
+  --panel-border: transparent;
+  --panel-shadow: none;
+  --panel-pad-app: 0;
+  --panel-pad-filters: 0;
+  --chart-border: transparent;
+  --row-hover: var(--bg-elevated);
+  --heading-color: var(--text-muted);
+  --heading-weight: 600;
+  --body-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --accent-fill: var(--accent);
+}
+
+/* --- Nicolas: the OMG TRUE COMIC SANS EXPERIENCE!!!1!11!! Deliberately a
+   crappy-design tribute — pale mint, Comic Sans, clashing neon, glowing
+   pink headings, a rainbow fill button. Still has to be usable, so table
+   text stays dark and readable. --- */
+:root[data-theme='nicolas'] {
+  color-scheme: light;
+
+  --bg: #e2f6f0;
+  --bg-elevated: #ffffff;
+  --text: #101010;
+  --text-muted: #3a5f8a;
+  --accent: #ff1493;
+  --accent-contrast: #ffffff;
+  --border: #17c3b2;
+
+  --grad-purple: #9b3fe0;
+  --grad-magenta: #ff1493;
+  --grad-orange: #7cff00;
+  --chart-emphasis: #ffd000;
+
+  --panel-bg: var(--bg-elevated);
+  --panel-border: var(--accent);
+  --panel-shadow: 0 0 0 2px #17c3b2, 4px 4px 0 #ffd000;
+  --panel-pad-app: 1rem 1.25rem 0.5rem;
+  --panel-pad-filters: 1rem;
+  --chart-border: var(--accent);
+  --row-hover: rgba(255, 20, 147, 0.14);
+  --heading-color: #ff1493;
+  --heading-weight: 700;
+  --body-font: 'Comic Sans MS', 'Comic Neue', 'Chalkboard SE', 'Comic Sans', cursive;
+  --accent-fill: linear-gradient(90deg, #ff1493, #ffd000 30%, #7cff00 55%, #17c3b2 75%, #9b3fe0);
+}
+
+/* Nicolas-only flourishes — the vibe needs a few things CSS vars can't
+   carry (glow, tilt, loud tab pills). */
+:root[data-theme='nicolas'] h1 {
+  color: #ff1493;
+  text-shadow: 2px 2px 0 #7cff00, 4px 4px 0 #17c3b2;
+  transform: rotate(-2deg);
+}
+
+:root[data-theme='nicolas'] .dashboard-chart h2 {
+  text-shadow: 1px 1px 0 #7cff00;
+}
+
+:root[data-theme='nicolas'] #tabs {
+  border-bottom-color: #ff1493;
+}
+
+:root[data-theme='nicolas'] .tab-button {
+  color: #1a1aee;
+  font-weight: 700;
+}
+
+:root[data-theme='nicolas'] .tab-button.active {
+  color: #ff1493;
+}
+
+:root[data-theme='nicolas'] .songs-table th {
+  background: #ff1493;
+  color: #ffff00;
+  border-bottom-color: #7cff00;
+}
+
+:root[data-theme='nicolas'] .theme-toggle {
+  border-color: #ffd000;
+}
+
+/* Clean's --border is near-white and vanishes here — give the toggle a
+   visible edge like the other themes have. */
+:root[data-theme='clean'] .theme-toggle {
+  border-color: rgba(74, 99, 216, 0.4);
+}
+
+/* --- Clean: a calm light theme. Soft white cards on light grey, indigo
+   accent. Buttons: a faint tinted fill with a strong accent border, going
+   solid on hover (see the Clean-only button rules below). --- */
+:root[data-theme='clean'] {
+  color-scheme: light;
+
+  --bg: #f2f6fd;
+  --bg-elevated: #ffffff;
+  --text: #1b2436;
+  --text-muted: #6a77a0;
+  --accent: #4a63d8;
+  --accent-contrast: #ffffff;
+  --border: #eef1fa;
+
+  --grad-purple: #4a63d8;
+  --grad-magenta: #6a5ae0;
+  --grad-orange: #f0913a;
+  --chart-emphasis: #f0913a;
+
+  --panel-bg: var(--bg-elevated);
+  --panel-border: var(--border);
+  --panel-shadow: 0 4px 16px rgba(20, 30, 60, 0.07);
+  --panel-pad-app: 1rem 1.25rem 0.5rem;
+  --panel-pad-filters: 1rem;
+  --chart-border: var(--border);
+  --row-hover: rgba(74, 99, 216, 0.06);
+  --heading-color: var(--text);
+  --heading-weight: 600;
+  --body-font: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+  --accent-fill: var(--accent);
+}
+
+/* Clean buttons: near-transparent tinted fill, strong accent border to
+   make them pop, fill goes solid on hover — one smooth background/color
+   transition, nothing else (no glass, no lift, no shadow). */
+:root[data-theme='clean'] .page-button {
+  background: rgba(74, 99, 216, 0.01);
+  border: 1.5px solid var(--accent);
+  color: var(--accent);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+:root[data-theme='clean'] .page-button:hover:not(:disabled) {
+  background: var(--accent);
+  color: #ffffff;
+  transform: none;
+  box-shadow: none;
+}
+
+:root[data-theme='clean'] .page-button:disabled {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-muted);
+  box-shadow: none;
+}
+
+/* Primary actions (Create Playlist / Sync / Delete) — same shape, just a
+   stronger resting tint so they still read as primary. */
+:root[data-theme='clean'] .page-button.filled {
+  background: rgba(74, 100, 216, 0.01);
+  border: 1.5px solid var(--accent);
+  color: var(--accent);
+  box-shadow: none;
+}
+
+:root[data-theme='clean'] .page-button.filled:hover:not(:disabled) {
+  background: var(--accent);
+  color: #ffffff;
+  filter: none;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Current page reads as solidly selected, not just tinted. */
+:root[data-theme='clean'] .pagination-page.active:disabled {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+/* Reset Filters stays a quiet ghost — grey border, muted text, subtle
+   fill on hover (not the accent border/solid-fill the action buttons get). */
+:root[data-theme='clean'] .reset-filters-button {
+  background: transparent;
+  border: 1.5px solid var(--border);
+  color: var(--text-muted);
+}
+
+:root[data-theme='clean'] .reset-filters-button:hover:not(:disabled) {
+  background: var(--row-hover);
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+/* Clean, glassy surfaces: a soft pale gradient page behind frosted,
+   translucent, blurred cards — lighter and airier than flat white on
+   grey. */
+:root[data-theme='clean'] body {
+  background: linear-gradient(155deg, #eef3ff 0%, #f6f1fc 55%, #edfaf5 100%) fixed;
+}
+
+:root[data-theme='clean'] #app,
+:root[data-theme='clean'] #filters,
+:root[data-theme='clean'] .chart-container,
+:root[data-theme='clean'] .card {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.6);
+  box-shadow: 0 8px 28px rgba(70, 90, 150, 0.1);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+}
+
+:root[data-theme='clean'] #filters select,
+:root[data-theme='clean'] .filter-search-input {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(120, 135, 190, 0.35);
+}
+
+:root[data-theme='clean'] .songs-table th {
+  background: rgba(255, 255, 255, 0.15);
 }
 
 * {
@@ -30,7 +272,7 @@ body {
   padding: 2rem;
   background: var(--bg);
   color: var(--text);
-  font-family: 'Roboto', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--body-font);
 }
 
 h1 {
@@ -68,22 +310,11 @@ h1 {
 #app {
   max-width: 1400px;
   margin: 0 auto;
-}
-
-/* The card surface — panels in the reference sit on a slightly-lifted navy
-   with a hairline border and a soft shadow. */
-.card,
-.chart-container,
-#app,
-#filters {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
   border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
-}
-
-#app {
-  padding: 1rem 1.25rem 0.5rem;
+  box-shadow: var(--panel-shadow);
+  padding: var(--panel-pad-app);
 }
 
 #tabs {
@@ -135,14 +366,64 @@ h1 {
   color: #f2585b;
 }
 
-.page-button.danger {
-  border-color: #f2585b;
-  color: #f2585b;
+/* Two-way segmented theme switch, sits in the tab bar where Sync/Delete
+   used to be. */
+.theme-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
 }
 
-.page-button.danger:hover:not(:disabled) {
-  background: #f2585b;
-  color: #ffffff;
+.theme-toggle button {
+  padding: 0.3rem 0.85rem;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.theme-toggle button.active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.theme-toggle button:not(.active):hover {
+  color: var(--text);
+}
+
+/* Sync + Delete — grid-placed to the right of the pagination row (see
+   .table-footer), moved out of the tab bar. Full size, filled style (see
+   .page-button.filled), matching Create Playlist. */
+.library-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* Three tracks: empty spacer | centered pagination | right-aligned
+   Sync/Delete. The spacer balances the controls column so the pagination
+   bar stays optically centered under the table. */
+.table-footer {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.table-footer .pagination {
+  grid-column: 2;
+  margin: 0;
+}
+
+.table-footer .library-controls {
+  grid-column: 3;
+  justify-self: end;
 }
 
 #dashboards {
@@ -155,8 +436,8 @@ h1 {
 
 .dashboard-chart h2 {
   font-size: 1.05rem;
-  font-weight: 600;
-  color: var(--text);
+  font-weight: var(--heading-weight);
+  color: var(--heading-color);
   margin: 0 0 0.75rem;
 }
 
@@ -165,6 +446,10 @@ h1 {
    config, not CSS box padding. */
 .chart-container {
   height: 320px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--chart-border);
+  border-radius: 8px;
+  box-shadow: var(--panel-shadow);
 }
 
 .chart-container-map {
@@ -174,10 +459,14 @@ h1 {
 #filters {
   max-width: 1400px;
   margin: 0 auto 1rem;
-  padding: 1rem;
+  padding: var(--panel-pad-filters);
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: var(--panel-shadow);
 }
 
 .filter-row {
@@ -192,7 +481,7 @@ h1 {
   padding: 0.4rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg);
+  background: var(--bg-elevated);
   color: var(--text);
   font-family: inherit;
   font-size: 0.875rem;
@@ -242,6 +531,12 @@ h1 {
   top: 0;
   left: 0;
   width: 100%;
+  /* Match the track container: without an explicit height the input's
+     intrinsic size is inconsistent (and shifts under color-scheme: light),
+     which dropped one of the two overlaid thumbs below the bar. With a
+     fixed 20px box the 4px runnable-track centres predictably and both
+     thumbs land on the same line. */
+  height: 20px;
   margin: 0;
   background: none;
   pointer-events: none;
@@ -253,6 +548,17 @@ h1 {
   height: 4px;
   background: var(--border);
   border-radius: 2px;
+}
+
+/* Both overlaid inputs draw a 4px track; the second (top) one's line would
+   paint straight across the first one's thumb — only the first input's
+   track stays visible. Shape is kept for thumb centering. */
+.range-slider-track input + input::-webkit-slider-runnable-track {
+  background: transparent;
+}
+
+.range-slider-track input + input::-moz-range-track {
+  background: transparent;
 }
 
 .range-slider-input::-webkit-slider-thumb {
@@ -290,7 +596,7 @@ h1 {
 .login-button {
   display: inline-block;
   padding: 0.75rem 2rem;
-  background: linear-gradient(120deg, var(--grad-purple), var(--grad-magenta) 60%, var(--grad-orange));
+  background: var(--accent-fill);
   color: var(--accent-contrast);
   font-weight: 600;
   text-decoration: none;
@@ -322,7 +628,7 @@ h1 {
 
 .sync-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--grad-purple), var(--grad-magenta), var(--grad-orange));
+  background: var(--accent-fill);
   transition: width 0.3s ease-out;
 }
 
@@ -392,26 +698,45 @@ h1 {
   padding: 0 0.25rem;
 }
 
+/* Ghost/secondary button — must NOT inherit .page-button's accent-fill
+   hover (that produced accent-bg + accent-text combos with no contrast in
+   some themes). :not(:disabled) matches .page-button:hover's specificity
+   so this wins by being later in the file. */
 .reset-filters-button {
   margin-left: auto;
+  background: transparent;
   border-color: var(--border);
   color: var(--text-muted);
 }
 
-.reset-filters-button:hover {
-  background: var(--bg);
+.reset-filters-button:hover:not(:disabled) {
+  background: var(--row-hover);
+  border-color: var(--text-muted);
   color: var(--text);
 }
 
-.create-playlist-button {
-  margin-left: auto;
-  background: linear-gradient(120deg, var(--grad-purple), var(--grad-magenta) 60%, var(--grad-orange));
+/* Solid accent fill (the gradient in Studio, flat green in Classic) —
+   Create Playlist, Sync, Delete. */
+.page-button.filled {
+  background: var(--accent-fill);
   border-color: transparent;
   color: var(--accent-contrast);
 }
 
-.create-playlist-button:hover {
+.page-button.filled:hover:not(:disabled) {
+  background: var(--accent-fill);
+  color: var(--accent-contrast);
   filter: brightness(1.08);
+}
+
+.create-playlist-button {
+  margin-left: auto;
+}
+
+.table-message {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  padding: 1.5rem 0.25rem;
 }
 
 .songs-table-wrap {
@@ -447,7 +772,7 @@ h1 {
 }
 
 .songs-table tr:hover td {
-  background: rgba(224, 56, 157, 0.06);
+  background: var(--row-hover);
 }
 
 .songs-table td:nth-child(4),
