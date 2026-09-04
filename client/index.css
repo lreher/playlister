@@ -249,6 +249,21 @@
   background: rgba(255, 255, 255, 0.15);
   border-color: rgba(255, 255, 255, 0.6);
   box-shadow: 0 8px 28px rgba(70, 90, 150, 0.1);
+}
+
+/* #app has no fixed height — it grows with the whole song table, so it's
+   the tallest, most-scrolled element on the page. A blurred backdrop has
+   to be resampled every scroll frame as it moves across the fixed page
+   gradient behind it; over an area this large that's real, felt lag.
+   Solid instead of blurred here; the smaller, mostly-static filters/chart
+   cards below keep the frosted-glass blur since they don't pay that cost. */
+:root[data-theme='clean'] #app {
+  background: rgba(255, 255, 255, 0.55);
+}
+
+:root[data-theme='clean'] #filters,
+:root[data-theme='clean'] .chart-container,
+:root[data-theme='clean'] .card {
   backdrop-filter: blur(20px) saturate(150%);
   -webkit-backdrop-filter: blur(20px) saturate(150%);
 }
