@@ -1,0 +1,44 @@
+.sparkle-rain {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  /* Negative, not 0: a z-index:0 element still creates its own stacking
+     context and paints *above* the page's plain (non-positioned) static
+     content per the CSS2.1 stacking order — that's why this sat in front
+     of the cards/table instead of behind them. Negative puts it behind
+     all normal in-flow content, in front of only the body's own
+     background. */
+  z-index: -1;
+}
+
+.sparkle {
+  position: absolute;
+  top: 0;
+  background: currentColor;
+  /* Four-pointed sparkle/twinkle shape (concave sides), matching the
+     reference image rather than a plain 8-point star or a round dot. */
+  clip-path: polygon(50% 0%, 63% 38%, 100% 50%, 63% 62%, 50% 100%, 37% 62%, 0% 50%, 37% 38%);
+  filter: drop-shadow(0 0 4px currentColor);
+  opacity: 0;
+  animation-name: sparkle-fall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@keyframes sparkle-fall {
+  0% {
+    transform: translateY(-10vh) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(110vh) rotate(200deg);
+    opacity: 0;
+  }
+}
