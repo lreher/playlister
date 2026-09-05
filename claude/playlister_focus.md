@@ -27,6 +27,9 @@ The actual data now lives in **`data/playlister.db`**, a real SQLite database.
   `ExperimentalWarning` on every process start) — the API surface could still change.
   Synchronous, like the JSON-era `db.js` was, so no ripple effect into async/await
   plumbing elsewhere.
+  > **Superseded (Sep 5 2026)**: swapped for `better-sqlite3` behind knex, and the app
+  > went fully async. See "Query layer: knex" below — this bullet's reasoning was real
+  > at the time, just no longer the current setup.
 - **Migration, not a fresh start**: `scripts/migrate-to-sqlite.js` (`npm run migrate`,
   one-time) reads the old JSON files and populates the new tables — preserves the
   country/genre/popularity enrichment (real API work, not something to casually discard).
@@ -106,6 +109,12 @@ just expressed as JS `.filter()` calls before); `db/songs.js` stays focused on w
 genuinely reusable data-access (`getById`, and the two write operations with real
 business rules — dedup, whole-collection-replace).
 
+> **Superseded (Sep 5 2026)**: `controllers/songs.js` no longer hand-builds SQL strings
+> at all — rebuilt on knex's query builder, and `song_details` is gone. The layering
+> boundary described above (query-shaping logic in `controllers/`, reusable data-access
+> in `db/`) still holds exactly as described; only the "raw SQL" mechanism changed. See
+> "Query layer: knex" below.
+
 **Verified thoroughly, not just spot-checked**: before migrating, ground-truth baseline
 numbers were captured by requiring the *old* (pre-rewrite) `controllers/songs.js` +
 `db/*.js` straight from git history and running them against the real JSON — not
@@ -122,6 +131,133 @@ once it collided with the actual controller layer) → `store/` → **`db/`**, s
 the JSON files themselves moved out into their own `data/` directory, freeing
 `controllers/` for its real meaning (the `songQuery.js`-descended read-orchestration
 layer).
+
+## Query layer: knex (replaced hand-rolled SQL — Sep 5 2026)
+
+Started from a simple ask — clean up `controllers/songs.js`'s repeated `if (x) {
+clauses.push(...); params.push(...) }` filter-building blocks with a real query builder —
+and grew into a proper multi-round decision (driver, execution model, schema shape) once
+the obvious pick turned out to have real trade-offs. Everything in `controllers/songs.js`
+and every `db/*.js` file is knex now; no hand-built SQL strings anywhere in the app.
+
+**Decisions made getting here, in order** (each one genuinely up for debate, not a
+foregone conclusion):
+- **knex over Drizzle/Kysely** — checked driver support before assuming: knex's SQLite
+  dialect requires `sqlite3` or `better-sqlite3` (no native `node:sqlite` support, open
+  upstream issue, unimplemented); Kysely's built-in SQLite dialect also wraps
+  `better-sqlite3`; Drizzle actually has an official `node:sqlite` driver and would have
+  kept the zero-native-dependency property intact. Chosen anyway, explicitly accepting
+  the driver swap — knex was the preference once the trade-off was on the table.
+- **Full async, not knex-as-SQL-string-builder-only** — knex's query execution is
+  Promise-based regardless of driver; there was a real option to use it purely to
+  generate `{sql, bindings}` via `.toSQL().toNative()` and execute those synchronously
+  through `node:sqlite`, keeping the whole app sync with zero ripple. Rejected in favor of
+  real async throughout — "leverage node's async nature" was the stated reasoning. Worth
+  being precise about, though: `better-sqlite3` (like `node:sqlite`) is synchronous under
+  the hood, so this doesn't buy real concurrency the way it would with a driver that does
+  actual non-blocking I/O (`sqlite3` does, via libuv's thread pool, at the cost of being
+  slower per-query and less maintained) — it was chosen knowingly as async *syntax* over
+  `better-sqlite3`'s speed/maintenance/prebuilt-binary convenience, not for a performance
+  win this specific driver can't deliver.
+- **Migration files, not the old self-healing bootstrap** — replaced `db/database.js`'s
+  `CREATE TABLE IF NOT EXISTS` + `PRAGMA table_info` + `ALTER TABLE` self-heal block (and
+  the three standalone one-off scripts it grew alongside — `scripts/migrate-to-sqlite.js`,
+  `scripts/migrate-to-multi-tenant.js`, `scripts/migrate-drop-songs-added-at.js`, all left
+  on disk untouched as historical record, none wired to any npm script any more) with real
+  knex migrations under `migrations/`. `npm run migrate` (`knex migrate:latest`) is now
+  `deploy.sh`'s migration step (see "Publishing changes" below).
+- **No raw SQL anywhere, including the schema** — the real design fork. `song_details`
+  (the view computing `country`/`year`/`decade` live via `COALESCE`, `substr()`, and a
+  registered `isrc_country` SQL function, plus `GROUP_CONCAT` for artist names/genres) has
+  no knex builder equivalent for any of that — those are SQL functions/expressions, not
+  query shape. Lucas pushed on whether that was really the schema's fault rather than
+  knex's: `year`/`decade` were being *recomputed on every read* from data that was fully
+  knowable at insert time (no reason for that, independent of knex); `country` has a real
+  excuse (an artist's country often resolves well after its songs are first inserted,
+  hours later via the MusicBrainz/Wikidata cascade) but the fix for that is "update the
+  stored value once, when it changes," not "recompute it on every request forever."
+  **Resolution: persist `year`/`decade`/`country` as real columns on `songs`**, computed
+  once in JS at insert time (`db/songs.js`'s `mergeTracks`), with `country` specifically
+  re-derived and written to every affected song whenever the underlying artist's country
+  later resolves (`db/artists.js`'s `upsert` calls `songsDb.updatePrimaryArtistCountry`
+  when `patch.country` is a real, non-null value — deliberately does *not* propagate a
+  null "still unresolved" result, so an existing ISRC-derived fallback on the song never
+  gets blanked out). This is a genuine improvement, not a workaround: SQL still does what
+  it's actually good at (filtering, grouping, pagination via `.where`/`.groupBy`/`.limit`),
+  nothing gets recomputed redundantly on every read, and the schema is simpler to reason
+  about than it was. `GROUP_CONCAT` (artist names, genres) is pure display, bounded to
+  the current page (~50 rows) — moved to two batched `.whereIn(songIds)` queries + JS-side
+  grouping (`loadDisplayFields` in `controllers/songs.js`), no per-request cost concern
+  since it's never a full-table operation. One related, deliberate simplification: genre/
+  artist filtering changed from case-insensitive to exact-match (knex has no `LOWER()`
+  builder method, and the filter dropdowns are sourced from the same table, so the user
+  always picks an already-exact-cased value anyway).
+- **Two connections, not one** — `db/index.js` exports a single `getDb(role)` function
+  (`'app'`, the default; `'sync'`), each lazily created and cached. `scripts/sync.js` and
+  `sources/syncQueue.js` always pass `getDb('sync')` explicitly through every db call
+  (including into `sources/spotify.js`'s token functions, which are called from both the
+  web route and the sync path) so a long-running sync — minutes on a first-ever sync,
+  hours during country enrichment — never contends with a live request for the app
+  connection's one pooled slot. Both connections are capped `{min: 1, max: 1}` — deliberate,
+  not an oversight: `better-sqlite3` is synchronous, so a bigger pool buys no real
+  concurrency and only risks contention; SQLite's own WAL mode is what actually lets the
+  two connections read/write the same file concurrently without blocking each other.
+  (Went through an intermediate shape — separate `db/database.js`/`db/syncDatabase.js`
+  files — before consolidating into the single `db/index.js` factory function above.)
+- **Every `db/*.js` function takes the connection as an explicit trailing argument**
+  (defaulting to the app connection), rather than a hidden module-level global or a
+  second parallel set of modules — matches this project's existing "explicit over
+  implicit" preference (see musings.md).
+
+**Bootstrapping migrations onto a database that predates them** — local dev and the
+droplet both already had the pre-knex schema live. `scripts/bootstrap-knex-migrations.js`
+(idempotent, one-time) manually creates knex's own tracking tables and marks the baseline
+migration (`20260905000001_initial_schema.js`) as already-applied *without running it* (its
+plain `CREATE TABLE`s would otherwise fail against tables that already exist) — everything
+from `20260905000002` onward (add + backfill the new `year`/`decade`/`country` columns,
+drop the old view) then runs for real. A genuinely fresh install just runs both migrations
+in order via `npm run migrate` and never needs the bootstrap script at all. **Run and
+verified against local** (6218 songs, all backfilled correctly, view confirmed gone).
+**Not yet run against the droplet** — needs the same one-time `node
+scripts/bootstrap-knex-migrations.js` over SSH before its next `npm run deploy`, or that
+deploy's `npm run migrate` step will fail trying to create tables that already exist.
+
+**Two real bugs found by direct verification, not just review**:
+- **`better-sqlite3@13.0.3`'s prebuilt binary segfaults immediately on load in this WSL2
+  environment** — confirmed it wasn't a code issue by `require()`-ing the raw `.node`
+  prebuild file directly in isolation (still segfaulted, before any app code ran); no
+  `make`/build tools available locally to rebuild from source as an alternative fix.
+  Downgrading to `12.11.1` resolved it cleanly. Worth knowing if a future `npm install`
+  ever bumps this dependency again — check for a repeat before assuming it's unrelated.
+- **`likedCounts` summed to 6219 against a real total of 6218** — caught by actually
+  summing and comparing against the known baseline, not by inspection. Root cause: the
+  per-user "added" rows query (`userAddedAtRows` in `controllers/songs.js`) was missing
+  the `JOIN songs` guard against orphaned `playlist_tracks` rows (membership pointing at a
+  `song_id` absent from `songs`, the residue of an interrupted/older sync) that the
+  original SQL version explicitly had, for exactly this reason (see the "Playlists" section
+  above). Fixed and re-verified against the real total.
+
+**Verified thoroughly against the real local library** (6218 songs), not just isolated
+unit checks: `getSongs`/`getFilterOptions`/`getStats` runs matched known baselines (total,
+93 countries, 470 genres, 4501 artists, 48 playlists); a genre+country filter combo and a
+playlist filter both matched independently-computed expected counts; the artist-country
+resync (`db/artists.js`'s `upsert` → `db/songs.js`'s `updatePrimaryArtistCountry`) was
+proven live against a real unresolved artist (propagated correctly, then cleanly reverted)
+and proven *not* to wipe an existing ISRC-fallback value when a resolution attempt comes
+back null; a cross-tenant check (unknown user) correctly saw zero songs; and the whole
+authenticated HTTP path was exercised end-to-end with a forged real session cookie against
+every route (`/api/me`, `/api/sync-status`, `/api/enrichment-status`, `/api/songs`,
+`/api/filters`, `/api/stats`), plus an isolated test of `server/index.js`'s async-rejection
+dispatch fix (see below).
+
+**One correctness fix needed outside the query layer itself**: every route handler is
+async now (it awaits db calls), but `server/index.js` was dispatching requests via a plain
+synchronous `try/catch` around `router.lookup(req, res)` — that would **not** catch a
+rejected promise from an async handler, silently turning a failure into a hung request
+instead of a 500. Fixed by running the lookup inside a `Promise.resolve().then(...).catch(...)`
+so both a synchronous throw and an async rejection land in the same place. Proven with an
+isolated test (a deliberately-throwing async handler through the same dispatch pattern),
+not just reasoned about.
 
 ## Quick start
 ```
@@ -169,8 +305,9 @@ needs a valid Spotify token.
   taking/returning plain objects — no HTTP concerns. Extracted from `index.js` when it
   grew past ~290 lines of routing mixed with business logic.
 - `sources/spotify.js` — OAuth (Authorization Code flow), token read/write/refresh.
-- `db/database.js` — the SQLite connection + schema, everything else in `db/` is built
-  on it. See "Data layer: SQLite" above for the full rationale.
+- `db/index.js` — exports `getDb(role)`, the app's two lazily-created, cached knex
+  connections (`'app'`, the default; `'sync'`). Replaced `db/database.js` (and the
+  short-lived separate `db/syncDatabase.js`) — see "Query layer: knex" below.
 - `db/tokens.js` — the OAuth token singleton row, via `get()`/`set()`.
 - `db/songs.js` — `getAll()`, `getById(id)`, `mergeTracks(items)` (the shared dedupe-
   and-append helper, called from `scripts/sync.js` for both Liked Songs and playlist
@@ -1097,9 +1234,11 @@ remotely. Chosen over two alternatives on purpose:
 Two pieces:
 - `scripts/deploy.sh` — git-tracked, so it exists locally too, but only ever *runs* on
   the droplet: `git pull` → `npm install` → timestamped `data/playlister.db` backup (last
-  5 kept) → idempotent schema migrations (currently just `npm run migrate-drop-added-at`,
-  each self-guards) → `npm run build` → `systemctl restart playlister` → Cloudflare cache
-  purge. Migrations run before the restart so the schema matches the code coming up.
+  5 kept) → schema migrations (`npm run migrate`, i.e. `knex migrate:latest` — see "Query
+  layer: knex" below; superseded the old `npm run migrate-drop-added-at` step, knex's own
+  `knex_migrations` table now tracks what's applied instead of each script self-guarding)
+  → `npm run build` → `systemctl restart playlister` → Cloudflare cache purge. Migrations
+  run before the restart so the schema matches the code coming up.
 - `~/.ssh/config` (local machine only, not git-tracked) has a `playlister-prod` host
   alias for `159.223.125.80` — keeps the droplet's IP out of the committed repo
   entirely (it's also not permanent, see above), and out of `package.json`'s `deploy`
@@ -1152,8 +1291,13 @@ other clone that currently exists.
 
 ## Open items / natural next steps
 
-(Status as of Sep 3 2026.)
+(Status as of Sep 5 2026.)
 
+- **Query layer: knex — done locally, not yet deployed.** See "Query layer: knex" above.
+  **Blocking next deploy**: `node scripts/bootstrap-knex-migrations.js` needs to run once
+  by hand over SSH on the droplet before its next `npm run deploy` — otherwise that
+  deploy's `npm run migrate` step fails trying to `CREATE TABLE` against a database that
+  already has the pre-knex schema.
 - **Per-user "Added" date fix — deployed and live** (Sep 3). See "Per-user 'Added' date"
   above. Still wants a real login by Lucas to confirm the authed path end to end.
 - **Conditional login sync + Sync button — deployed** (Sep 3). See "Login sync is
@@ -1209,3 +1353,7 @@ other clone that currently exists.
 - **Visual themes (4-way switcher)** — **done, deployed** (Sep 3 2026). Clean (default) /
   Studio / Classic / Nicolas, toggle in the tab bar, persisted to `localStorage`. See
   "Visual themes" above.
+- **Query layer: knex** — **done locally, not yet deployed** (Sep 5 2026). Replaced all
+  hand-built SQL with knex's query builder, async throughout, real migrations, `country`/
+  `year`/`decade` persisted on `songs` instead of view-computed. See "Query layer: knex"
+  above — including the droplet migration-bootstrap step still needed before it ships.
