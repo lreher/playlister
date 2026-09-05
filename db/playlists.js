@@ -1,5 +1,8 @@
 const db = require('./index')();
 
+// Stays comfortably under SQLite's default compound-SELECT term limit (500).
+const TRACK_INSERT_CHUNK_SIZE = 400;
+
 // Per-user id so two users' Liked Songs never collide in the shared playlist_tracks table.
 const likedSongsId = (userId) => `liked-songs:${userId}`;
 
@@ -62,11 +65,15 @@ const set = async (userId, playlists, knexInstance = db) => {
       await trx('playlists').insert(record).onConflict(['id', 'user_id']).merge(record);
 
       await trx('playlist_tracks').where({ playlist_id: playlist.id }).del();
-      if (playlist.tracks.length > 0) {
+      // Chunked: knex compiles a multi-row SQLite insert with onConflict as a UNION ALL
+      // of SELECTs, one term per row — SQLite's compound-SELECT limit (500) rejects a
+      // single call for any playlist (Liked Songs especially) past that many tracks.
+      for (let i = 0; i < playlist.tracks.length; i += TRACK_INSERT_CHUNK_SIZE) {
+        const chunk = playlist.tracks.slice(i, i + TRACK_INSERT_CHUNK_SIZE);
         // A real Spotify playlist can contain the same track twice — ignore the conflict
         // rather than crash on the (playlist_id, song_id) primary key.
         await trx('playlist_tracks')
-          .insert(playlist.tracks.map((t) => ({ playlist_id: playlist.id, song_id: t.id, added_at: t.addedAt })))
+          .insert(chunk.map((t) => ({ playlist_id: playlist.id, song_id: t.id, added_at: t.addedAt })))
           .onConflict(['playlist_id', 'song_id'])
           .ignore();
       }
