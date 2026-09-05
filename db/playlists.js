@@ -1,4 +1,4 @@
-const db = require('./database');
+const db = require('./index')();
 
 // Liked Songs isn't a real shared Spotify playlist — it's synthetic per
 // user — so unlike a real playlist_id, its id can't be one global constant
@@ -7,25 +7,15 @@ const db = require('./database');
 // stable/predictable without a separate lookup.
 const likedSongsId = (userId) => `liked-songs:${userId}`;
 
-const selectTracks = db.prepare('SELECT song_id, added_at FROM playlist_tracks WHERE playlist_id = ? ORDER BY added_at DESC');
-const insertPlaylist = db.prepare(`
-  INSERT INTO playlists (id, user_id, name, owner_name, public, collaborative, snapshot_id)
-  VALUES (@id, @userId, @name, @ownerName, @public, @collaborative, @snapshotId)
-  ON CONFLICT(id, user_id) DO UPDATE SET
-    name = @name, owner_name = @ownerName, public = @public,
-    collaborative = @collaborative, snapshot_id = @snapshotId
-`);
-// OR IGNORE, not a plain INSERT: a real Spotify playlist can legitimately
-// contain the same track more than once (add it twice, no error on
-// Spotify's end) — our schema only tracks membership, not multiplicity, so
-// a repeat within one playlist's fetched track list should just no-op
-// rather than crash on the (playlist_id, song_id) primary key.
-const insertTrack = db.prepare('INSERT OR IGNORE INTO playlist_tracks (playlist_id, song_id, added_at) VALUES (?, ?, ?)');
-const deletePlaylistTracks = db.prepare('DELETE FROM playlist_tracks WHERE playlist_id = ?');
-const deletePlaylist = db.prepare('DELETE FROM playlists WHERE user_id = ? AND id = ?');
-const selectExistingIds = db.prepare('SELECT id FROM playlists WHERE user_id = ?');
+async function tracksByPlaylistId(knexInstance, playlistId) {
+  const rows = await knexInstance('playlist_tracks')
+    .where({ playlist_id: playlistId })
+    .orderBy('added_at', 'desc')
+    .select('song_id', 'added_at');
+  return rows.map((r) => ({ id: r.song_id, addedAt: r.added_at }));
+}
 
-function rowToPlaylist(row) {
+function rowToPlaylist(row, tracks) {
   return {
     id: row.id,
     name: row.name,
@@ -33,15 +23,23 @@ function rowToPlaylist(row) {
     public: !!row.public,
     collaborative: !!row.collaborative,
     snapshotId: row.snapshot_id,
-    tracks: selectTracks.all(row.id).map((t) => ({ id: t.song_id, addedAt: t.added_at })),
+    tracks,
   };
 }
 
-const getAll = (userId) => db.prepare('SELECT * FROM playlists WHERE user_id = ?').all(userId).map(rowToPlaylist);
+const getAll = async (userId, knexInstance = db) => {
+  const rows = await knexInstance('playlists').where({ user_id: userId }).select('*');
+  const playlists = [];
+  for (const row of rows) {
+    playlists.push(rowToPlaylist(row, await tracksByPlaylistId(knexInstance, row.id)));
+  }
+  return playlists;
+};
 
-const getById = (userId, id) => {
-  const row = db.prepare('SELECT * FROM playlists WHERE user_id = ? AND id = ?').get(userId, id);
-  return row ? rowToPlaylist(row) : null;
+const getById = async (userId, id, knexInstance = db) => {
+  const row = await knexInstance('playlists').where({ user_id: userId, id }).first();
+  if (!row) return null;
+  return rowToPlaylist(row, await tracksByPlaylistId(knexInstance, row.id));
 };
 
 // Whole-collection replace, scoped to one user — a sync run recomputes that
@@ -56,38 +54,47 @@ const getById = (userId, id) => {
 // regardless of who triggered the sync, so whichever user's sync runs last
 // simply refreshes it to the latest truth; harmless for any other user who
 // also follows that same playlist.
-const set = (userId, playlists) => {
-  db.exec('BEGIN');
-  try {
+const set = async (userId, playlists, knexInstance = db) => {
+  await knexInstance.transaction(async (trx) => {
     const keepIds = new Set(playlists.map((p) => p.id));
-    const existingIds = selectExistingIds.all(userId).map((r) => r.id);
+    const existingIds = await trx('playlists').where({ user_id: userId }).pluck('id');
     for (const id of existingIds) {
-      if (!keepIds.has(id)) deletePlaylist.run(userId, id);
-      // playlist_tracks for `id` is left alone here on purpose — another
-      // user's own playlists row may still reference this same real
-      // playlist_id. If nobody does any more, its rows become harmless
-      // orphaned dead weight rather than something worth chasing down.
-    }
-    for (const playlist of playlists) {
-      insertPlaylist.run({
-        id: playlist.id,
-        userId,
-        name: playlist.name,
-        ownerName: playlist.ownerName,
-        public: playlist.public ? 1 : 0,
-        collaborative: playlist.collaborative ? 1 : 0,
-        snapshotId: playlist.snapshotId,
-      });
-      deletePlaylistTracks.run(playlist.id);
-      for (const track of playlist.tracks) {
-        insertTrack.run(playlist.id, track.id, track.addedAt);
+      if (!keepIds.has(id)) {
+        await trx('playlists').where({ user_id: userId, id }).del();
+        // playlist_tracks for `id` is left alone here on purpose — another
+        // user's own playlists row may still reference this same real
+        // playlist_id. If nobody does any more, its rows become harmless
+        // orphaned dead weight rather than something worth chasing down.
       }
     }
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+
+    for (const playlist of playlists) {
+      const record = {
+        id: playlist.id,
+        user_id: userId,
+        name: playlist.name,
+        owner_name: playlist.ownerName,
+        public: playlist.public ? 1 : 0,
+        collaborative: playlist.collaborative ? 1 : 0,
+        snapshot_id: playlist.snapshotId,
+      };
+      await trx('playlists').insert(record).onConflict(['id', 'user_id']).merge(record);
+
+      await trx('playlist_tracks').where({ playlist_id: playlist.id }).del();
+      if (playlist.tracks.length > 0) {
+        // OR IGNORE equivalent: a real Spotify playlist can legitimately
+        // contain the same track more than once (add it twice, no error on
+        // Spotify's end) — our schema only tracks membership, not
+        // multiplicity, so a repeat within one playlist's fetched track
+        // list should just no-op rather than crash on the (playlist_id,
+        // song_id) primary key.
+        await trx('playlist_tracks')
+          .insert(playlist.tracks.map((t) => ({ playlist_id: playlist.id, song_id: t.id, added_at: t.addedAt })))
+          .onConflict(['playlist_id', 'song_id'])
+          .ignore();
+      }
+    }
+  });
   return playlists;
 };
 

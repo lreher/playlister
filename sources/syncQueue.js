@@ -15,6 +15,7 @@
 // limit for the fast queue, MusicBrainz/Wikidata's for the enrichment
 // queue — from two users' syncs overlapping).
 const usersDb = require('../db/users');
+const syncDb = require('../db/index')('sync');
 const sync = require('../scripts/sync');
 
 let fastQueue = Promise.resolve();
@@ -25,20 +26,20 @@ function enqueueSync(userId) {
   fastQueue = fastQueue
     .then(() => {
       console.log(`[sync] now running for user ${userId}`);
-      return sync.runFastSync(userId);
+      return sync.runFastSync(userId, syncDb);
     })
-    .then(() => {
-      usersDb.setSyncStatus(userId, 'done');
+    .then(async () => {
+      await usersDb.setSyncStatus(userId, 'done', null, syncDb);
       enqueueEnrichment();
     })
-    .catch((err) => {
+    .catch(async (err) => {
       // Previously silent — a fast-sync crash only ever showed up in the
       // database (sync_error), never in the process's own console output,
       // which made a real crash indistinguishable from "still working"
       // without SSHing in to query the DB by hand. Logged here now for the
       // same reason enqueueEnrichment already did below.
       console.error(`[sync] fast sync failed for user ${userId}:`, err.message);
-      usersDb.setSyncStatus(userId, 'error', err.message);
+      await usersDb.setSyncStatus(userId, 'error', err.message, syncDb);
     });
 }
 
@@ -51,7 +52,7 @@ function enqueueSync(userId) {
 // unresolved.
 function enqueueEnrichment() {
   enrichQueue = enrichQueue
-    .then(() => sync.runEnrichment())
+    .then(() => sync.runEnrichment(syncDb))
     .catch((err) => console.error('[enrichment] failed:', err.message));
 }
 
@@ -60,11 +61,13 @@ function enqueueEnrichment() {
 // status lives in the DB (not memory) specifically so this can detect and
 // clear that on the next boot. Only the fast phase's status is tracked
 // this way; an interrupted enrichment pass needs no recovery step — it
-// just resumes naturally next time any user's fast sync completes.
-function recoverStuckSyncs() {
-  for (const user of usersDb.getAll()) {
+// just resumes naturally next time any user's fast sync completes. Runs
+// once at boot, before the server accepts any traffic — no concurrency
+// concern, so it just uses the default (main) connection.
+async function recoverStuckSyncs() {
+  for (const user of await usersDb.getAll()) {
     if (user.syncStatus === 'syncing') {
-      usersDb.setSyncStatus(user.id, 'error', 'Interrupted by a server restart — please log in again to retry.');
+      await usersDb.setSyncStatus(user.id, 'error', 'Interrupted by a server restart — please log in again to retry.');
     }
   }
 }

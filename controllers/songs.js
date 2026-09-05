@@ -1,71 +1,47 @@
-const db = require('../db/database');
+const db = require('../db/index')();
 const playlists = require('../db/playlists');
-
-// Correlated subqueries reused by every song_details read below — the
-// view itself only covers one-to-one fields (a song has one primary
-// artist), these two are one-to-many (every artist on the track, every
-// genre across all of them) so they don't fit as plain view columns.
-const ARTIST_NAMES_SUBQUERY = `(
-  SELECT GROUP_CONCAT(name, ', ') FROM (
-    SELECT a.name FROM song_artists sa JOIN artists a ON a.id = sa.artist_id
-    WHERE sa.song_id = sd.id ORDER BY sa.position
-  )
-)`;
-const GENRES_SUBQUERY = `(
-  SELECT GROUP_CONCAT(DISTINCT ag.genre) FROM song_artists sa
-  JOIN artist_genres ag ON ag.artist_id = sa.artist_id WHERE sa.song_id = sd.id
-)`;
-
-// A song's "added" date for THIS user: the earliest date it entered any of
-// their playlists (their Liked Songs among them — it's a playlist here too).
-// Per-user by nature — the same track is liked/added on a different date by
-// each person — so it can't live on the shared songs row or the
-// song_details view; every read that sorts, filters, or buckets by "added"
-// threads a userId param through this instead. Takes one `?` (the user id).
-const USER_ADDED_AT_SUBQUERY = `(
-  SELECT MIN(pt.added_at) FROM playlist_tracks pt
-  JOIN playlists pl ON pl.id = pt.playlist_id
-  WHERE pt.song_id = sd.id AND pl.user_id = ?
-)`;
-
-// The same per-user "added" date as a standalone row source (one row per
-// song in the user's library, its value = first date that song entered any
-// of their playlists) — for the range/histogram reads that aggregate over
-// it rather than attaching it to a song_details row. Membership *is* the
-// FROM clause here, so no separate visibleToUser check is needed. The
-// `JOIN songs` keeps this in step with getSongs, which is `FROM songs`:
-// without it an orphaned playlist_tracks row (membership pointing at a
-// song_id absent from `songs` — the residue of an interrupted/older sync)
-// would inflate these aggregates past the visible song count. One `?`.
-const USER_ADDED_AT_ROWS = `(
-  SELECT MIN(pt.added_at) AS added_at FROM playlist_tracks pt
-  JOIN playlists pl ON pl.id = pt.playlist_id
-  JOIN songs s ON s.id = pt.song_id
-  WHERE pl.user_id = ? GROUP BY pt.song_id
-)`;
 
 // `artists`/`songs`/`song_artists`/`artist_genres` are a shared cache across
 // every user (see playlister_focus.md's "Data layer" section) — a song or
 // artist's own metadata doesn't depend on who's browsing. What's user-
 // specific is *membership*: a song only belongs to a user's library if it's
 // in one of their playlists (including their own Liked Songs pseudo-
-// playlist). Every read in this file goes through this same check, applied
-// to whichever id column that particular query's FROM clause exposes.
-function visibleToUser(songIdColumn) {
-  return `EXISTS (
-    SELECT 1 FROM playlist_tracks pt
-    JOIN playlists pl ON pl.id = pt.playlist_id
-    WHERE pt.song_id = ${songIdColumn} AND pl.user_id = ?
-  )`;
+// playlist). Every read in this file applies this same check.
+function visibleToUser(knexInstance, userId) {
+  return function whereExistsCallback() {
+    this.select(1)
+      .from('playlist_tracks')
+      .join('playlists', 'playlists.id', 'playlist_tracks.playlist_id')
+      .where('playlist_tracks.song_id', knexInstance.ref('songs.id'))
+      .andWhere('playlists.user_id', userId);
+  };
 }
 
-// Builds a parameterized WHERE clause from getSongs()'s filter object, plus
-// the mandatory per-user visibility check (always applied, not just when an
-// explicit filter is set — this is what actually scopes "all songs" to
-// "your songs"). Genre and artist are EXISTS subqueries (a song can match
-// on any of its artists, not just the primary one — genre is a many-valued
-// union across them).
-function buildWhere(
+// A song's "added" date for THIS user: the earliest date it entered any of
+// their playlists (their Liked Songs among them — it's a playlist here
+// too). Per-user by nature — the same track is liked/added on a different
+// date by each person — so it isn't a stored column on the shared songs
+// row; every read that needs it goes through this correlated subquery
+// (used as a SELECT-list value below) or the EXISTS-based checks in
+// buildWhere for the addedFrom/addedTo filters.
+function userAddedAtSubquery(knexInstance, userId) {
+  return knexInstance('playlist_tracks')
+    .join('playlists', 'playlists.id', 'playlist_tracks.playlist_id')
+    .where('playlists.user_id', userId)
+    .andWhere('playlist_tracks.song_id', knexInstance.ref('songs.id'))
+    .min('added_at as addedAt');
+}
+
+// Builds the shared, fully-joined-and-filtered query (no select/order/limit
+// yet) used by both the COUNT and the page fetch in getSongs — a LEFT JOIN
+// to the primary (position 0) artist for popularity/followers display and
+// filtering, plus every WHERE/EXISTS filter including the mandatory
+// per-user visibility check (always applied, not just when an explicit
+// filter is set — this is what actually scopes "all songs" to "your
+// songs"). Genre/artist/playlist are EXISTS subqueries since a song can
+// match on any of its artists, not just the primary one.
+function buildFilteredQuery(
+  knexInstance,
   {
     genre,
     year,
@@ -83,90 +59,127 @@ function buildWhere(
   },
   userId
 ) {
-  const clauses = [];
-  const params = [];
+  const query = knexInstance('songs')
+    .leftJoin('song_artists as primary_sa', function joinPrimaryArtist() {
+      this.on('primary_sa.song_id', '=', 'songs.id').andOnVal('primary_sa.position', '=', 0);
+    })
+    .leftJoin('artists as primary_artist', 'primary_artist.id', 'primary_sa.artist_id')
+    .whereExists(visibleToUser(knexInstance, userId));
 
   if (genre) {
-    clauses.push(
-      `EXISTS (SELECT 1 FROM song_artists sa JOIN artist_genres ag ON ag.artist_id = sa.artist_id WHERE sa.song_id = sd.id AND lower(ag.genre) = lower(?))`
-    );
-    params.push(genre);
+    query.whereExists(function () {
+      this.select(1)
+        .from('song_artists as sa')
+        .join('artist_genres as ag', 'ag.artist_id', 'sa.artist_id')
+        .where('sa.song_id', knexInstance.ref('songs.id'))
+        .andWhere('ag.genre', genre);
+    });
   }
-  if (year) {
-    clauses.push('sd.year = ?');
-    params.push(year);
-  }
-  if (decade) {
-    clauses.push('sd.decade = ?');
-    params.push(decade);
-  }
-  if (country) {
-    clauses.push('sd.country = ?');
-    params.push(country.toUpperCase());
-  }
-  if (albumType) {
-    clauses.push('sd.album_type = ?');
-    params.push(albumType);
-  }
+  if (year) query.andWhere('songs.year', year);
+  if (decade) query.andWhere('songs.decade', decade);
+  if (country) query.andWhere('songs.country', country.toUpperCase());
+  if (albumType) query.andWhere('songs.album_type', albumType);
   if (artist) {
-    clauses.push(
-      `EXISTS (SELECT 1 FROM song_artists sa JOIN artists a ON a.id = sa.artist_id WHERE sa.song_id = sd.id AND lower(a.name) = lower(?))`
-    );
-    params.push(artist);
+    query.whereExists(function () {
+      this.select(1)
+        .from('song_artists as sa')
+        .join('artists as a', 'a.id', 'sa.artist_id')
+        .where('sa.song_id', knexInstance.ref('songs.id'))
+        .andWhere('a.name', artist);
+    });
   }
   if (playlist) {
-    // Joins through playlists (not just a bare playlist_tracks check) and
-    // scopes to this user: the same real playlist_id can now legitimately
-    // belong to more than one user's own `playlists` row (composite PK),
-    // so an unscoped check here would be a cross-tenant leak vector.
-    clauses.push(
-      'EXISTS (SELECT 1 FROM playlist_tracks pt JOIN playlists pl ON pl.id = pt.playlist_id WHERE pt.playlist_id = ? AND pl.user_id = ? AND pt.song_id = sd.id)'
-    );
-    params.push(playlist, userId);
+    // Scoped to this user (not just a bare playlist_id check): the same
+    // real playlist_id can now legitimately belong to more than one user's
+    // own `playlists` row (composite PK), so an unscoped check here would
+    // be a cross-tenant leak vector.
+    query.whereExists(function () {
+      this.select(1)
+        .from('playlist_tracks as pt')
+        .join('playlists as pl', 'pl.id', 'pt.playlist_id')
+        .where('pt.playlist_id', playlist)
+        .andWhere('pl.user_id', userId)
+        .andWhere('pt.song_id', knexInstance.ref('songs.id'));
+    });
   }
-  if (durationMin != null) {
-    clauses.push('sd.duration_ms >= ?');
-    params.push(durationMin);
-  }
-  if (durationMax != null) {
-    clauses.push('sd.duration_ms <= ?');
-    params.push(durationMax);
-  }
+  if (durationMin != null) query.andWhere('songs.duration_ms', '>=', durationMin);
+  if (durationMax != null) query.andWhere('songs.duration_ms', '<=', durationMax);
+  // A song's earliest-added date is a MIN across potentially several
+  // playlist_tracks rows (this user's own) — "MIN >= addedFrom" is
+  // equivalent to "no matching row is earlier than addedFrom", and
+  // "MIN <= addedTo" is equivalent to "at least one matching row is that
+  // early or earlier". Expressing it this way keeps both checks as plain
+  // EXISTS/NOT EXISTS, with no need to compare against a subquery's result.
   if (addedFrom) {
-    clauses.push(`${USER_ADDED_AT_SUBQUERY} >= ?`);
-    params.push(userId, addedFrom);
+    query.whereNotExists(function () {
+      this.select(1)
+        .from('playlist_tracks')
+        .join('playlists', 'playlists.id', 'playlist_tracks.playlist_id')
+        .where('playlists.user_id', userId)
+        .andWhere('playlist_tracks.song_id', knexInstance.ref('songs.id'))
+        .andWhere('playlist_tracks.added_at', '<', addedFrom);
+    });
   }
   if (addedTo) {
-    clauses.push(`${USER_ADDED_AT_SUBQUERY} <= ?`);
-    params.push(userId, addedTo);
+    query.whereExists(function () {
+      this.select(1)
+        .from('playlist_tracks')
+        .join('playlists', 'playlists.id', 'playlist_tracks.playlist_id')
+        .where('playlists.user_id', userId)
+        .andWhere('playlist_tracks.song_id', knexInstance.ref('songs.id'))
+        .andWhere('playlist_tracks.added_at', '<=', addedTo);
+    });
   }
   // NULL naturally fails these comparisons in SQL — a song with no
   // resolved artist popularity is excluded exactly like the old
   // `artistPopularity !== null && ...` check, with no extra clause needed.
-  if (popularityMin != null) {
-    clauses.push('sd.artist_popularity >= ?');
-    params.push(popularityMin);
-  }
-  if (popularityMax != null) {
-    clauses.push('sd.artist_popularity <= ?');
-    params.push(popularityMax);
-  }
+  if (popularityMin != null) query.andWhere('primary_artist.popularity', '>=', popularityMin);
+  if (popularityMax != null) query.andWhere('primary_artist.popularity', '<=', popularityMax);
 
-  clauses.push(visibleToUser('sd.id'));
-  params.push(userId);
-
-  return { where: `WHERE ${clauses.join(' AND ')}`, params };
+  return query;
 }
 
-function rowToSong(row) {
+// Batch-loads every artist (id/name, in position order) and the distinct
+// genre set for a page of songs in two queries total, instead of one
+// GROUP_CONCAT-style correlated subquery per song per row — display-only,
+// and bounded to the current page (~50 rows), so there's no full-table
+// cost the way there would be if this ran per visible song.
+async function loadDisplayFields(knexInstance, songIds) {
+  if (songIds.length === 0) return { artistsBySong: new Map(), genresBySong: new Map() };
+
+  const artistRows = await knexInstance('song_artists')
+    .join('artists', 'artists.id', 'song_artists.artist_id')
+    .whereIn('song_artists.song_id', songIds)
+    .orderBy('song_artists.position')
+    .select({ songId: 'song_artists.song_id', name: 'artists.name' });
+  const artistsBySong = new Map();
+  for (const row of artistRows) {
+    if (!artistsBySong.has(row.songId)) artistsBySong.set(row.songId, []);
+    artistsBySong.get(row.songId).push(row.name);
+  }
+
+  const genreRows = await knexInstance('song_artists')
+    .join('artist_genres', 'artist_genres.artist_id', 'song_artists.artist_id')
+    .whereIn('song_artists.song_id', songIds)
+    .select({ songId: 'song_artists.song_id', genre: 'artist_genres.genre' });
+  const genresBySong = new Map();
+  for (const row of genreRows) {
+    if (!genresBySong.has(row.songId)) genresBySong.set(row.songId, new Set());
+    genresBySong.get(row.songId).add(row.genre);
+  }
+
+  return { artistsBySong, genresBySong };
+}
+
+function rowToSong(row, artistNames, genres) {
   return {
     id: row.id,
     name: row.name,
-    artists: row.artist_names ?? '',
+    artists: artistNames.join(', '),
     album: row.album_name,
-    addedAt: row.added_at,
+    addedAt: row.addedAt,
     country: row.country,
-    genres: row.genres ? row.genres.split(',') : [],
+    genres,
     year: row.year,
     decade: row.decade,
     explicit: !!row.explicit,
@@ -179,26 +192,35 @@ function rowToSong(row) {
 }
 
 // Filters, sorts (newest-added first, by this user's own added date), and
-// paginates the calling user's own visible songs via real SQL against the
-// song_details view.
-function getSongs({ userId, limit = 50, offset = 0, ...filters }) {
-  const { where, params } = buildWhere(filters, userId);
+// paginates the calling user's own visible songs.
+async function getSongs({ userId, limit = 50, offset = 0, ...filters }, knexInstance = db) {
+  const { count } = await buildFilteredQuery(knexInstance, filters, userId).count('songs.id as count').first();
 
-  const { count: total } = db.prepare(`SELECT COUNT(*) AS count FROM song_details sd ${where}`).get(...params);
-
-  const items = db
-    .prepare(
-      `SELECT sd.*, ${USER_ADDED_AT_SUBQUERY} AS added_at,
-              ${ARTIST_NAMES_SUBQUERY} AS artist_names, ${GENRES_SUBQUERY} AS genres
-       FROM song_details sd
-       ${where}
-       ORDER BY added_at DESC
-       LIMIT ? OFFSET ?`
+  const rows = await buildFilteredQuery(knexInstance, filters, userId)
+    .select(
+      'songs.id',
+      'songs.name',
+      'songs.album_name',
+      'songs.country',
+      'songs.year',
+      'songs.decade',
+      'songs.explicit',
+      'songs.duration_ms',
+      'songs.album_type',
+      'songs.spotify_url',
+      { artist_popularity: 'primary_artist.popularity', artist_followers: 'primary_artist.followers' },
+      { addedAt: userAddedAtSubquery(knexInstance, userId) }
     )
-    .all(userId, ...params, limit, offset)
-    .map(rowToSong);
+    .orderBy('addedAt', 'desc')
+    .limit(limit)
+    .offset(offset);
 
-  return { items, total, limit, offset };
+  const { artistsBySong, genresBySong } = await loadDisplayFields(knexInstance, rows.map((r) => r.id));
+  const items = rows.map((row) =>
+    rowToSong(row, artistsBySong.get(row.id) ?? [], [...(genresBySong.get(row.id) ?? [])])
+  );
+
+  return { items, total: count, limit, offset };
 }
 
 // Distinct filter option lists + ranges, for populating the List tab's
@@ -206,50 +228,75 @@ function getSongs({ userId, limit = 50, offset = 0, ...filters }) {
 // as getSongs, so these never reveal another user's library composition
 // (which genres/artists/countries exist elsewhere in the system) even
 // though individual song rows already stay hidden.
-function getFilterOptions(userId) {
-  const genres = db
-    .prepare(
-      `SELECT DISTINCT ag.genre FROM artist_genres ag JOIN song_artists sa ON sa.artist_id = ag.artist_id
-       WHERE ${visibleToUser('sa.song_id')} ORDER BY ag.genre`
-    )
-    .all(userId)
-    .map((r) => r.genre);
-  const years = db
-    .prepare(`SELECT DISTINCT year FROM song_details sd WHERE year IS NOT NULL AND ${visibleToUser('sd.id')} ORDER BY year DESC`)
-    .all(userId)
-    .map((r) => r.year);
-  const decades = db
-    .prepare(`SELECT DISTINCT decade FROM song_details sd WHERE decade IS NOT NULL AND ${visibleToUser('sd.id')} ORDER BY decade DESC`)
-    .all(userId)
-    .map((r) => r.decade);
-  const countries = db
-    .prepare(`SELECT DISTINCT country FROM song_details sd WHERE country IS NOT NULL AND ${visibleToUser('sd.id')} ORDER BY country`)
-    .all(userId)
-    .map((r) => r.country);
-  const albumTypes = db
-    .prepare(`SELECT DISTINCT album_type FROM songs s WHERE album_type IS NOT NULL AND ${visibleToUser('s.id')} ORDER BY album_type`)
-    .all(userId)
-    .map((r) => r.album_type);
-  const artists = db
-    .prepare(
-      `SELECT DISTINCT a.name FROM song_artists sa JOIN artists a ON a.id = sa.artist_id
-       WHERE ${visibleToUser('sa.song_id')} ORDER BY a.name`
-    )
-    .all(userId)
-    .map((r) => r.name);
+async function getFilterOptions(userId, knexInstance = db) {
+  const genres = (
+    await knexInstance('artist_genres as ag')
+      .join('song_artists as sa', 'sa.artist_id', 'ag.artist_id')
+      .whereExists(visibleToUserWithSongIdColumn(knexInstance, 'sa.song_id', userId))
+      .distinct('ag.genre')
+      .orderBy('ag.genre')
+  ).map((r) => r.genre);
 
-  const durationRange = db
-    .prepare(`SELECT MIN(duration_ms) AS min, MAX(duration_ms) AS max FROM songs s WHERE ${visibleToUser('s.id')}`)
-    .get(userId);
-  const addedRange = db
-    .prepare(`SELECT MIN(added_at) AS min, MAX(added_at) AS max FROM ${USER_ADDED_AT_ROWS}`)
-    .get(userId);
-  const popularityRange = db
-    .prepare(
-      `SELECT MIN(artist_popularity) AS min, MAX(artist_popularity) AS max FROM song_details sd
-       WHERE artist_popularity IS NOT NULL AND ${visibleToUser('sd.id')}`
-    )
-    .get(userId);
+  const years = (
+    await knexInstance('songs')
+      .whereNotNull('year')
+      .whereExists(visibleToUser(knexInstance, userId))
+      .distinct('year')
+      .orderBy('year', 'desc')
+  ).map((r) => r.year);
+
+  const decades = (
+    await knexInstance('songs')
+      .whereNotNull('decade')
+      .whereExists(visibleToUser(knexInstance, userId))
+      .distinct('decade')
+      .orderBy('decade', 'desc')
+  ).map((r) => r.decade);
+
+  const countries = (
+    await knexInstance('songs')
+      .whereNotNull('country')
+      .whereExists(visibleToUser(knexInstance, userId))
+      .distinct('country')
+      .orderBy('country')
+  ).map((r) => r.country);
+
+  const albumTypes = (
+    await knexInstance('songs')
+      .whereNotNull('album_type')
+      .whereExists(visibleToUser(knexInstance, userId))
+      .distinct('album_type')
+      .orderBy('album_type')
+  ).map((r) => r.album_type);
+
+  const artists = (
+    await knexInstance('artists as a')
+      .join('song_artists as sa', 'sa.artist_id', 'a.id')
+      .whereExists(visibleToUserWithSongIdColumn(knexInstance, 'sa.song_id', userId))
+      .distinct('a.name')
+      .orderBy('a.name')
+  ).map((r) => r.name);
+
+  const durationRange = await knexInstance('songs')
+    .whereExists(visibleToUser(knexInstance, userId))
+    .min('duration_ms as min')
+    .max('duration_ms as max')
+    .first();
+
+  const addedAtRows = await userAddedAtRows(knexInstance, userId);
+  const addedTimes = addedAtRows.map((r) => r.addedAt).sort();
+  const addedRange = { min: addedTimes[0] ?? null, max: addedTimes[addedTimes.length - 1] ?? null };
+
+  const popularityRange = await knexInstance('songs')
+    .leftJoin('song_artists as primary_sa', function () {
+      this.on('primary_sa.song_id', '=', 'songs.id').andOnVal('primary_sa.position', '=', 0);
+    })
+    .leftJoin('artists as primary_artist', 'primary_artist.id', 'primary_sa.artist_id')
+    .whereExists(visibleToUser(knexInstance, userId))
+    .whereNotNull('primary_artist.popularity')
+    .min('primary_artist.popularity as min')
+    .max('primary_artist.popularity as max')
+    .first();
 
   return {
     genres,
@@ -261,48 +308,104 @@ function getFilterOptions(userId) {
     durationRange,
     addedRange,
     popularityRange,
-    playlists: playlists.getAll(userId).map((p) => ({ id: p.id, name: p.name, trackCount: p.tracks.length })),
+    playlists: (await playlists.getAll(userId, knexInstance)).map((p) => ({
+      id: p.id,
+      name: p.name,
+      trackCount: p.tracks.length,
+    })),
   };
 }
 
-// Pre-aggregated counts for the Dashboards tab's charts, via GROUP BY —
-// scoped to the calling user's own visible songs, same reasoning as
-// getFilterOptions.
-function getStats(userId) {
-  const yearCounts = db
-    .prepare(
-      `SELECT year, COUNT(*) AS count FROM song_details sd
-       WHERE year IS NOT NULL AND ${visibleToUser('sd.id')} GROUP BY year ORDER BY year`
-    )
-    .all(userId);
-  const decadeCounts = db
-    .prepare(
-      `SELECT decade, COUNT(*) AS count FROM song_details sd
-       WHERE decade IS NOT NULL AND ${visibleToUser('sd.id')} GROUP BY decade ORDER BY decade`
-    )
-    .all(userId);
-  const popularityCounts = db
-    .prepare(
-      `SELECT (CAST(artist_popularity / 10 AS INTEGER) * 10) || '-' || (CAST(artist_popularity / 10 AS INTEGER) * 10 + 9) AS bucket,
-              COUNT(*) AS count
-       FROM song_details sd
-       WHERE artist_popularity IS NOT NULL AND ${visibleToUser('sd.id')}
-       GROUP BY CAST(artist_popularity / 10 AS INTEGER)
-       ORDER BY CAST(artist_popularity / 10 AS INTEGER)`
-    )
-    .all(userId);
-  const countryCounts = db
-    .prepare(
-      `SELECT country AS code, COUNT(*) AS count FROM song_details sd
-       WHERE country IS NOT NULL AND ${visibleToUser('sd.id')} GROUP BY country ORDER BY count DESC`
-    )
-    .all(userId);
-  const likedCounts = db
-    .prepare(
-      `SELECT substr(added_at, 1, 7) AS month, COUNT(*) AS count FROM ${USER_ADDED_AT_ROWS}
-       GROUP BY month ORDER BY month`
-    )
-    .all(userId);
+// Same visibility check as visibleToUser, but for a query whose FROM
+// clause exposes the song id under a different alias (e.g. song_artists'
+// sa.song_id rather than songs.id) — genre/artist option lists join
+// through song_artists directly rather than starting from songs.
+function visibleToUserWithSongIdColumn(knexInstance, songIdColumn, userId) {
+  return function whereExistsCallback() {
+    this.select(1)
+      .from('playlist_tracks')
+      .join('playlists', 'playlists.id', 'playlist_tracks.playlist_id')
+      .where('playlist_tracks.song_id', knexInstance.ref(songIdColumn))
+      .andWhere('playlists.user_id', userId);
+  };
+}
+
+// One row per song this user has (via any of their playlists, Liked Songs
+// included), value = the earliest date it entered any of them. The
+// membership join itself *is* the visibility check here — no separate
+// EXISTS needed, unlike the songs-table reads above. The join to `songs`
+// isn't just for shape — it guards against an orphaned playlist_tracks row
+// (membership pointing at a song_id absent from `songs`, the residue of an
+// interrupted/older sync) inflating these aggregates past the visible
+// song count.
+function userAddedAtRows(knexInstance, userId) {
+  return knexInstance('playlist_tracks')
+    .join('playlists', 'playlists.id', 'playlist_tracks.playlist_id')
+    .join('songs', 'songs.id', 'playlist_tracks.song_id')
+    .where('playlists.user_id', userId)
+    .groupBy('playlist_tracks.song_id')
+    .min('playlist_tracks.added_at as addedAt');
+}
+
+// Pre-aggregated counts for the Dashboards tab's charts — scoped to the
+// calling user's own visible songs, same reasoning as getFilterOptions.
+// year/decade/country are plain GROUP BYs on stored columns (pure SQL,
+// pushed down); popularity buckets and liked-by-month need JS-side
+// grouping (bucket-label formatting and month-string slicing aren't
+// expressible as knex builder calls without a raw SQL function) — both are
+// bounded to this user's own visible library, not a full-table scan, so
+// there's no real cost to doing that grouping in JS instead.
+async function getStats(userId, knexInstance = db) {
+  const yearCounts = await knexInstance('songs')
+    .whereNotNull('year')
+    .whereExists(visibleToUser(knexInstance, userId))
+    .groupBy('year')
+    .orderBy('year')
+    .select('year')
+    .count('* as count');
+
+  const decadeCounts = await knexInstance('songs')
+    .whereNotNull('decade')
+    .whereExists(visibleToUser(knexInstance, userId))
+    .groupBy('decade')
+    .orderBy('decade')
+    .select('decade')
+    .count('* as count');
+
+  const countryCounts = await knexInstance('songs')
+    .whereNotNull('country')
+    .whereExists(visibleToUser(knexInstance, userId))
+    .groupBy('country')
+    .orderBy('count', 'desc')
+    .select({ code: 'country' })
+    .count('* as count');
+
+  const popularityRows = await knexInstance('songs')
+    .leftJoin('song_artists as primary_sa', function () {
+      this.on('primary_sa.song_id', '=', 'songs.id').andOnVal('primary_sa.position', '=', 0);
+    })
+    .leftJoin('artists as primary_artist', 'primary_artist.id', 'primary_sa.artist_id')
+    .whereExists(visibleToUser(knexInstance, userId))
+    .whereNotNull('primary_artist.popularity')
+    .select({ popularity: 'primary_artist.popularity' });
+  const popularityBuckets = new Map();
+  for (const { popularity } of popularityRows) {
+    const bucket = Math.floor(popularity / 10) * 10;
+    popularityBuckets.set(bucket, (popularityBuckets.get(bucket) ?? 0) + 1);
+  }
+  const popularityCounts = [...popularityBuckets.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([bucket, count]) => ({ bucket: `${bucket}-${bucket + 9}`, count }));
+
+  const addedAtRows = await userAddedAtRows(knexInstance, userId);
+  const monthCounts = new Map();
+  for (const { addedAt } of addedAtRows) {
+    const month = addedAt.slice(0, 7);
+    monthCounts.set(month, (monthCounts.get(month) ?? 0) + 1);
+  }
+  const likedCounts = [...monthCounts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, count]) => ({ month, count }));
 
   return { yearCounts, decadeCounts, popularityCounts, countryCounts, likedCounts };
 }

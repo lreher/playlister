@@ -8,6 +8,7 @@ const songsDb = require('../db/songs');
 const artistsDb = require('../db/artists');
 const playlistsDb = require('../db/playlists');
 const usersDb = require('../db/users');
+const syncDb = require('../db/index')('sync');
 const enrichmentProgress = require('../sources/enrichmentProgress');
 
 const MB_BATCH_SIZE = 15;
@@ -65,11 +66,11 @@ function createCircuitBreaker(threshold) {
 // each run — it mattered when a full walk fired on every server restart,
 // but sync is per-login now (25-user cap), so a full walk per sync is an
 // acceptable cost for correct per-user membership.
-async function syncSongs(accessToken, userId) {
+async function syncSongs(accessToken, userId, knexInstance = syncDb) {
   const items = [];
   let url = 'https://api.spotify.com/v1/me/tracks?limit=50';
 
-  usersDb.setSyncProgress(userId, 'songs', 0, null);
+  await usersDb.setSyncProgress(userId, 'songs', 0, null, knexInstance);
 
   while (url) {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
@@ -79,11 +80,11 @@ async function syncSongs(accessToken, userId) {
 
     const data = await res.json();
     items.push(...data.items);
-    usersDb.setSyncProgress(userId, 'songs', items.length, data.total);
+    await usersDb.setSyncProgress(userId, 'songs', items.length, data.total, knexInstance);
     url = data.next;
   }
 
-  songsDb.mergeTracks(items);
+  await songsDb.mergeTracks(items, knexInstance);
 
   // Only tracks that actually landed in `songs` — mergeTracks skips
   // Spotify's blank unlisted-track stubs (real id, empty name), and a
@@ -154,8 +155,8 @@ async function fetchPlaylistTracks(accessToken, playlistId) {
 // seed branch and no append-only path: both existed only because the old
 // syncSongs stopped early and so couldn't be trusted to have the whole
 // list.
-async function syncPlaylists(userId, accessToken, likedList) {
-  const existing = playlistsDb.getAll(userId);
+async function syncPlaylists(userId, accessToken, likedList, knexInstance = syncDb) {
+  const existing = await playlistsDb.getAll(userId, knexInstance);
   const existingById = new Map(existing.map((p) => [p.id, p]));
 
   const remotePlaylists = await fetchAllPlaylists(accessToken);
@@ -165,7 +166,7 @@ async function syncPlaylists(userId, accessToken, likedList) {
   let changedCount = 0;
 
   for (const [index, remote] of remotePlaylists.entries()) {
-    usersDb.setSyncProgress(userId, 'playlists', index, remotePlaylists.length);
+    await usersDb.setSyncProgress(userId, 'playlists', index, remotePlaylists.length, knexInstance);
     const current = existingById.get(remote.id);
 
     if (current && current.snapshotId === remote.snapshot_id) {
@@ -175,7 +176,7 @@ async function syncPlaylists(userId, accessToken, likedList) {
 
     changedCount++;
     const items = await fetchPlaylistTracks(accessToken, remote.id);
-    songsDb.mergeTracks(items);
+    await songsDb.mergeTracks(items, knexInstance);
 
     updated.push({
       id: remote.id,
@@ -187,7 +188,7 @@ async function syncPlaylists(userId, accessToken, likedList) {
       tracks: items.map((item) => ({ id: item.track.id, addedAt: item.added_at })),
     });
   }
-  usersDb.setSyncProgress(userId, 'playlists', remotePlaylists.length, remotePlaylists.length);
+  await usersDb.setSyncProgress(userId, 'playlists', remotePlaylists.length, remotePlaylists.length, knexInstance);
 
   updated.unshift({
     id: playlistsDb.likedSongsId(userId),
@@ -199,7 +200,7 @@ async function syncPlaylists(userId, accessToken, likedList) {
     tracks: likedList,
   });
 
-  playlistsDb.set(userId, updated);
+  await playlistsDb.set(userId, updated, knexInstance);
   console.log(`[playlists] sync complete: ${changedCount}/${remotePlaylists.length} playlists refreshed`);
 }
 
@@ -217,7 +218,7 @@ async function syncPlaylists(userId, accessToken, likedList) {
 // each artist as songs come in) — only ones previously left unresolved
 // actually get queried; anything already resolved (by any user's prior
 // sync) is skipped, so this is cheap to re-run every time.
-async function resolveCountries(artistList) {
+async function resolveCountries(artistList, knexInstance = syncDb) {
   const toResolve = artistList.filter((a) => a.country === null);
 
   if (toResolve.length === 0) {
@@ -245,7 +246,7 @@ async function resolveCountries(artistList) {
     try {
       const results = await musicbrainz.resolveBatch(batch, breaker.recordRetry);
       for (const [id, result] of Object.entries(results)) {
-        artistsDb.upsert(id, { name: result.name, country: result.country });
+        await artistsDb.upsert(id, { name: result.name, country: result.country }, knexInstance);
         if (result.mbid && result.country === null) {
           needsFallback.push({ id, mbid: result.mbid });
         }
@@ -285,7 +286,7 @@ async function resolveCountries(artistList) {
       try {
         const country = await musicbrainz.lookupArtistCountry(mbid, breaker.recordRetry);
         if (country) {
-          artistsDb.upsert(id, { country });
+          await artistsDb.upsert(id, { country }, knexInstance);
           recovered++;
         }
       } catch (err) {
@@ -299,7 +300,10 @@ async function resolveCountries(artistList) {
     console.log(`[artists] recovered ${recovered}/${needsFallback.length} via fallback lookup`);
   }
 
-  const stillNull = toResolve.filter((a) => artistsDb.getById(a.id).country === null);
+  // Can't `await` inside Array.prototype.filter's callback — resolve every
+  // lookup first (in parallel), then filter over the resolved results.
+  const afterMusicbrainz = await Promise.all(toResolve.map((a) => artistsDb.getById(a.id, knexInstance)));
+  const stillNull = toResolve.filter((a, i) => afterMusicbrainz[i].country === null);
 
   if (stillNull.length > 0) {
     console.log(`[artists] trying Wikidata for ${stillNull.length} remaining artists`);
@@ -312,7 +316,7 @@ async function resolveCountries(artistList) {
         const results = await wikidata.resolveWikidataBatch(batch);
         for (const [id, result] of Object.entries(results)) {
           if (result.country) {
-            artistsDb.upsert(id, { country: result.country });
+            await artistsDb.upsert(id, { country: result.country }, knexInstance);
             wikidataResolved++;
           }
         }
@@ -327,7 +331,8 @@ async function resolveCountries(artistList) {
 
     console.log(`[artists] recovered ${wikidataResolved}/${stillNull.length} via Wikidata`);
 
-    const stillNullAfterWikidata = stillNull.filter((a) => artistsDb.getById(a.id).country === null);
+    const afterWikidata = await Promise.all(stillNull.map((a) => artistsDb.getById(a.id, knexInstance)));
+    const stillNullAfterWikidata = stillNull.filter((a, i) => afterWikidata[i].country === null);
 
     if (stillNullAfterWikidata.length > 0) {
       console.log(
@@ -357,8 +362,8 @@ async function resolveCountries(artistList) {
           const countryByQid = await wikidata.lookupCountriesByQids(batch);
           for (const [id, qid] of Object.entries(qidById)) {
             const country = countryByQid.get(qid);
-            if (country && artistsDb.getById(id).country === null) {
-              artistsDb.upsert(id, { country });
+            if (country && (await artistsDb.getById(id, knexInstance)).country === null) {
+              await artistsDb.upsert(id, { country }, knexInstance);
               fuzzyResolved++;
             }
           }
@@ -388,16 +393,16 @@ async function resolveCountries(artistList) {
 // viewing) for a resolvable ISRC country. Purely local — no Spotify call —
 // since songs already carry each track's ISRC. Global, same as the rest of
 // artist resolution.
-function resolveIsrcFallback() {
+async function resolveIsrcFallback(knexInstance = syncDb) {
   let recovered = 0;
 
-  for (const song of songsDb.getAll()) {
+  for (const song of await songsDb.getAll(knexInstance)) {
     const primary = song.artists[0];
-    const entry = primary && artistsDb.getById(primary.id);
+    const entry = primary && (await artistsDb.getById(primary.id, knexInstance));
     if (entry && entry.country === null) {
       const country = isrcCountry.countryFromIsrc(song.isrc);
       if (country) {
-        artistsDb.upsert(primary.id, { country });
+        await artistsDb.upsert(primary.id, { country }, knexInstance);
         recovered++;
       }
     }
@@ -421,11 +426,9 @@ function resolveIsrcFallback() {
 // call from runFastSync needs to report progress; the manual CLI path
 // doesn't) — when given, reports into the same sync_progress_* columns
 // syncSongs/syncPlaylists already use.
-async function resolveArtistDetails(accessToken, userId) {
-  const toResolve = artistsDb
-    .getAll()
-    .filter((a) => !a.detailsResolved)
-    .map((a) => a.id);
+async function resolveArtistDetails(accessToken, userId, knexInstance = syncDb) {
+  const allArtists = await artistsDb.getAll(knexInstance);
+  const toResolve = allArtists.filter((a) => !a.detailsResolved).map((a) => a.id);
 
   if (toResolve.length === 0) {
     console.log('[artists] all cached artists already have genres/popularity/followers');
@@ -434,7 +437,7 @@ async function resolveArtistDetails(accessToken, userId) {
 
   console.log(`[artists] resolving details for ${toResolve.length} artists`);
   let resolved = 0;
-  if (userId) usersDb.setSyncProgress(userId, 'details', 0, toResolve.length);
+  if (userId) await usersDb.setSyncProgress(userId, 'details', 0, toResolve.length, knexInstance);
 
   for (let i = 0; i < toResolve.length; i += GENRE_BATCH_SIZE) {
     const batch = toResolve.slice(i, i + GENRE_BATCH_SIZE);
@@ -450,16 +453,20 @@ async function resolveArtistDetails(accessToken, userId) {
 
       const resData = await res.json();
       for (const artist of resData.artists) {
-        if (artist && artistsDb.getById(artist.id)) {
-          artistsDb.upsert(artist.id, {
-            genres: artist.genres ?? [],
-            popularity: artist.popularity ?? null,
-            followers: artist.followers?.total ?? null,
-          });
+        if (artist && (await artistsDb.getById(artist.id, knexInstance))) {
+          await artistsDb.upsert(
+            artist.id,
+            {
+              genres: artist.genres ?? [],
+              popularity: artist.popularity ?? null,
+              followers: artist.followers?.total ?? null,
+            },
+            knexInstance
+          );
         }
       }
       resolved += batch.length;
-      if (userId) usersDb.setSyncProgress(userId, 'details', resolved, toResolve.length);
+      if (userId) await usersDb.setSyncProgress(userId, 'details', resolved, toResolve.length, knexInstance);
       console.log(`[artists] resolved ${resolved}/${toResolve.length} artists`);
     } catch (err) {
       console.error(`[artists] batch failed: ${err.message}`);
@@ -487,24 +494,24 @@ async function resolveArtistDetails(accessToken, userId) {
 // artists in well under a minute, a small addition to the wait. Returns
 // the access token so the caller can hand it to runEnrichment without a
 // second token lookup.
-async function runFastSync(userId) {
-  const accessToken = await spotify.getValidAccessToken(userId);
+async function runFastSync(userId, knexInstance = syncDb) {
+  const accessToken = await spotify.getValidAccessToken(userId, knexInstance);
   if (!accessToken) {
     throw new Error(`No valid Spotify token for user ${userId}`);
   }
 
   console.log(`== Syncing liked songs (user ${userId}) ==`);
-  const likedList = await syncSongs(accessToken, userId);
+  const likedList = await syncSongs(accessToken, userId, knexInstance);
 
   console.log('== Syncing playlists ==');
-  await syncPlaylists(userId, accessToken, likedList);
+  await syncPlaylists(userId, accessToken, likedList, knexInstance);
 
   // Local only, no network — cheap enough to run inline here rather than
   // deferring it to the slow phase.
-  resolveIsrcFallback();
+  await resolveIsrcFallback(knexInstance);
 
   console.log('== Resolving artist genres/popularity ==');
-  await resolveArtistDetails(accessToken, userId);
+  await resolveArtistDetails(accessToken, userId, knexInstance);
 
   return accessToken;
 }
@@ -512,12 +519,12 @@ async function runFastSync(userId) {
 // The slow half — global artist country resolution, not scoped to any one
 // user's login. No access token needed at all — MusicBrainz/Wikidata don't
 // use Spotify auth.
-async function runEnrichment() {
+async function runEnrichment(knexInstance = syncDb) {
   console.log('== Resolving artist countries ==');
   // Every artist already has a row by this point — db/songs.js's
   // mergeTracks stub-creates one for each artist as songs come in, so the
   // full roster is just whatever's in the (global) table.
-  await resolveCountries(artistsDb.getAll());
+  await resolveCountries(await artistsDb.getAll(knexInstance), knexInstance);
 
   console.log('== Enrichment complete ==');
 }
@@ -526,32 +533,35 @@ async function runEnrichment() {
 // entry point below, where waiting for the whole thing is expected. The
 // server-triggered path (sources/syncQueue.js) calls runFastSync and
 // runEnrichment separately instead, on two independent queues.
-async function runFullSync(userId) {
-  await runFastSync(userId);
-  await runEnrichment();
+async function runFullSync(userId, knexInstance = syncDb) {
+  await runFastSync(userId, knexInstance);
+  await runEnrichment(knexInstance);
   console.log('== Sync complete ==');
 }
 
 if (require.main === module) {
   const userId = process.argv[2];
   if (!userId) {
-    const known = usersDb.getAll();
-    console.error('Usage: node scripts/sync.js <spotifyUserId>');
-    if (known.length > 0) {
-      console.error('Known users:');
-      known.forEach((u) => console.error(`  ${u.id}${u.displayName ? ` (${u.displayName})` : ''}`));
-    } else {
-      console.error('No users have logged in yet.');
-    }
-    process.exit(1);
+    usersDb
+      .getAll()
+      .then((known) => {
+        console.error('Usage: node scripts/sync.js <spotifyUserId>');
+        if (known.length > 0) {
+          console.error('Known users:');
+          known.forEach((u) => console.error(`  ${u.id}${u.displayName ? ` (${u.displayName})` : ''}`));
+        } else {
+          console.error('No users have logged in yet.');
+        }
+      })
+      .finally(() => process.exit(1));
+  } else {
+    runFullSync(userId)
+      .then(() => process.exit(0))
+      .catch((err) => {
+        console.error('Sync failed:', err.message);
+        process.exit(1);
+      });
   }
-
-  runFullSync(userId)
-    .then(() => process.exit(0))
-    .catch((err) => {
-      console.error('Sync failed:', err.message);
-      process.exit(1);
-    });
 }
 
 module.exports = {

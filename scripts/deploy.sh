@@ -18,10 +18,11 @@ if [ -f data/playlister.db ]; then
   ls -1t data/playlister.db.deploy-backup-* | tail -n +6 | xargs -r rm
 fi
 
-# Idempotent schema migrations (each self-guards and no-ops once applied) —
-# run before the restart so the schema matches the code coming up. Add new
-# one-time migrations here; drop them again once universally applied.
-npm run migrate-drop-added-at
+# Schema migrations — knex tracks what's already applied (knex_migrations
+# table), so this is always safe to run: only whatever's new since the last
+# deploy actually executes. Runs before the restart so the schema matches
+# the code coming up.
+npm run migrate
 
 npm run build
 systemctl restart playlister

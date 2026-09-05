@@ -21,13 +21,13 @@ const SYNC_STALE_MS = 24 * 60 * 60 * 1000;
 // Whether logging in should kick off a sync: never synced, a previous sync
 // errored, or the last one is stale. Skips if one's already running. Used
 // by /callback and /api/sync.
-function enqueueSyncIfNeeded(userId, { force = false } = {}) {
-  const user = usersDb.getById(userId);
+async function enqueueSyncIfNeeded(userId, { force = false } = {}) {
+  const user = await usersDb.getById(userId);
   if (!user || user.syncStatus === 'syncing') return;
   const stale =
     !user.lastSyncedAt || Date.now() - Date.parse(user.lastSyncedAt) > SYNC_STALE_MS;
   if (force || user.syncStatus === 'error' || stale) {
-    usersDb.setSyncStatus(userId, 'syncing');
+    await usersDb.setSyncStatus(userId, 'syncing');
     syncQueue.enqueueSync(userId);
   }
 }
@@ -40,13 +40,13 @@ registerStaticRoutes(router);
 // alone). find-my-way has no middleware chaining, so this just wraps the
 // handler directly.
 function requireSession(handler) {
-  return (req, res, ...rest) => {
+  return async (req, res, ...rest) => {
     const userId = session.getSessionUserId(req);
     // A validly-signed cookie can still point at a user row that no longer
     // exists (e.g. the database was reset) — check both, not just
     // signature validity, so a stale cookie 401s cleanly on the first
     // request instead of the frontend having to fail its way there.
-    if (!userId || !usersDb.getById(userId)) {
+    if (!userId || !(await usersDb.getById(userId))) {
       // no-store matters here specifically: a cached 401 would keep being
       // served from that same fixed URL even after a real login succeeds.
       res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -81,7 +81,7 @@ router.on('GET', '/callback', async (req, res) => {
     // Only sync on login when there's a reason to (first login, prior
     // error, or a stale library) — a returning user with a fresh library
     // goes straight to the app. The manual Sync button covers "update now."
-    enqueueSyncIfNeeded(userId);
+    await enqueueSyncIfNeeded(userId);
     res.writeHead(302, { Location: '/' });
     res.end();
   } catch (err) {
@@ -99,8 +99,8 @@ router.on('GET', '/logout', (req, res) => {
 router.on(
   'GET',
   '/api/me',
-  requireSession((req, res, userId) => {
-    const user = usersDb.getById(userId);
+  requireSession(async (req, res, userId) => {
+    const user = await usersDb.getById(userId);
     sendJson(res, { userId, displayName: user?.displayName ?? null });
   })
 );
@@ -108,8 +108,8 @@ router.on(
 router.on(
   'GET',
   '/api/sync-status',
-  requireSession((req, res, userId) => {
-    sendJson(res, usersDb.getSyncStatus(userId));
+  requireSession(async (req, res, userId) => {
+    sendJson(res, await usersDb.getSyncStatus(userId));
   })
 );
 
@@ -120,9 +120,9 @@ router.on(
 router.on(
   'POST',
   '/api/sync',
-  requireSession((req, res, userId) => {
-    enqueueSyncIfNeeded(userId, { force: true });
-    sendJson(res, usersDb.getSyncStatus(userId));
+  requireSession(async (req, res, userId) => {
+    await enqueueSyncIfNeeded(userId, { force: true });
+    sendJson(res, await usersDb.getSyncStatus(userId));
   })
 );
 
@@ -132,20 +132,20 @@ router.on(
 router.on(
   'GET',
   '/api/enrichment-status',
-  requireSession((req, res) => {
-    sendJson(res, { ...artistsDb.getEnrichmentStatus(), activeStep: enrichmentProgress.getStep() });
+  requireSession(async (req, res) => {
+    sendJson(res, { ...(await artistsDb.getEnrichmentStatus()), activeStep: enrichmentProgress.getStep() });
   })
 );
 
 router.on(
   'GET',
   '/api/songs',
-  requireSession((req, res, userId) => {
+  requireSession(async (req, res, userId) => {
     try {
       const params = getQueryParams(req);
       sendJson(
         res,
-        songsController.getSongs({
+        await songsController.getSongs({
           userId,
           limit: Math.min(Number(params.get('limit')) || 50, 50),
           offset: Number(params.get('offset')) || 0,
@@ -174,16 +174,16 @@ router.on(
 router.on(
   'GET',
   '/api/filters',
-  requireSession((req, res, userId) => {
-    sendJson(res, songsController.getFilterOptions(userId));
+  requireSession(async (req, res, userId) => {
+    sendJson(res, await songsController.getFilterOptions(userId));
   })
 );
 
 router.on(
   'GET',
   '/api/stats',
-  requireSession((req, res, userId) => {
-    sendJson(res, songsController.getStats(userId));
+  requireSession(async (req, res, userId) => {
+    sendJson(res, await songsController.getStats(userId));
   })
 );
 

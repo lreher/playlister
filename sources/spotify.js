@@ -1,3 +1,4 @@
+const db = require('../db/index')();
 const tokens = require('../db/tokens');
 const users = require('../db/users');
 
@@ -34,8 +35,10 @@ async function fetchProfile(accessToken) {
 
 // Exchanges the OAuth code, then resolves *who* just logged in (Spotify's
 // own user id) so the caller can set up a session — this app has no
-// separate account system, Spotify's own identity IS the login.
-async function exchangeCodeForTokens(code) {
+// separate account system, Spotify's own identity IS the login. Always
+// called from the /callback route (main connection, the default) — never
+// from the sync path, so no caller needs to pass knexInstance explicitly.
+async function exchangeCodeForTokens(code, knexInstance = db) {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
     code,
@@ -58,17 +61,24 @@ async function exchangeCodeForTokens(code) {
   const data = await res.json();
   const profile = await fetchProfile(data.access_token);
 
-  users.upsert({ id: profile.id, displayName: profile.displayName });
-  tokens.set(profile.id, {
-    access_token: data.access_token,
-    refresh_token: data.refresh_token,
-    expires_at: Date.now() + data.expires_in * 1000,
-  });
+  await users.upsert({ id: profile.id, displayName: profile.displayName }, knexInstance);
+  await tokens.set(
+    profile.id,
+    {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      expires_at: Date.now() + data.expires_in * 1000,
+    },
+    knexInstance
+  );
 
   return { userId: profile.id, displayName: profile.displayName };
 }
 
-async function refreshAccessToken(userId, refreshToken) {
+// scripts/sync.js's runFastSync passes the sync connection explicitly here
+// (via getValidAccessToken below) — a token refresh triggered mid-sync
+// shouldn't contend with the app connection either.
+async function refreshAccessToken(userId, refreshToken, knexInstance = db) {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
@@ -88,25 +98,29 @@ async function refreshAccessToken(userId, refreshToken) {
   }
 
   const data = await res.json();
-  tokens.set(userId, {
-    access_token: data.access_token,
-    // Spotify may omit refresh_token on refresh; keep the old one if so.
-    refresh_token: data.refresh_token || refreshToken,
-    expires_at: Date.now() + data.expires_in * 1000,
-  });
+  await tokens.set(
+    userId,
+    {
+      access_token: data.access_token,
+      // Spotify may omit refresh_token on refresh; keep the old one if so.
+      refresh_token: data.refresh_token || refreshToken,
+      expires_at: Date.now() + data.expires_in * 1000,
+    },
+    knexInstance
+  );
 
   return data.access_token;
 }
 
-async function getValidAccessToken(userId) {
-  const current = tokens.get(userId);
+async function getValidAccessToken(userId, knexInstance = db) {
+  const current = await tokens.get(userId, knexInstance);
   if (!current) return null;
 
   if (Date.now() < current.expires_at) {
     return current.access_token;
   }
 
-  return refreshAccessToken(userId, current.refresh_token);
+  return refreshAccessToken(userId, current.refresh_token, knexInstance);
 }
 
 async function getLikedSongsPage(accessToken, { limit, offset }) {
