@@ -21,6 +21,50 @@ npm run sync           # fetches new songs + resolves country/genre/popularity d
 Must be logged in (via `/login` in the browser) before `npm run sync` will work — it
 needs a valid Spotify token.
 
+## Linting
+
+`npm run lint` (ESLint, flat config in `eslint.config.js`). **No preset/recommended
+rulesets** — Lucas's explicit call, only enable rules he's specifically asked for:
+`no-var`, `eqeqeq` (strict everywhere, including `== null` — no exception carved in;
+existing `!= null` checks were rewritten to explicit `!== null && !== undefined`),
+`no-unused-vars`, and a `no-restricted-syntax` ban on the `function` keyword and
+`class` — **arrow functions only, no classes at all**, anywhere in the codebase. No
+plugins, no pre-commit hook — `npm run lint` is run by hand.
+
+**Real constraints this rule bumps into, worth knowing before "just add a function"**:
+- A knex `.whereExists()`/`.whereNotExists()`/`.leftJoin()` callback that uses `this`
+  (knex binds the sub-query builder or `JoinClause` to `this`) can't be arrow-converted
+  naively — arrow functions don't rebind `this`, so a mechanical swap silently breaks
+  the query. Fix used throughout `controllers/songs.js` and the migrations: pass a
+  fully-built sub-query object directly (`knexInstance('table').select(...)...`)
+  instead of a callback, or use knex's `.leftJoin(table, (join) => ...)` form — confirmed
+  from knex's own source that `join` is passed as a real argument too, not just via
+  `this`.
+- Object/class **getters and setters can't be written as arrow functions at all** — a
+  JS syntax restriction, not a style choice. `scripts/sync.js`'s `createCircuitBreaker`
+  used to expose `get tripped()`; renamed to a plain arrow method `isTripped()` instead
+  (call sites: `breaker.isTripped()`, not `breaker.tripped`).
+
+**Bulk-conversion technique** (worth reusing for future large mechanical refactors):
+ESLint core has no fixer for "function → arrow" — only a satellite plugin
+(`eslint-plugin-prefer-arrow-functions`) does, and it correctly skips anything using
+`this`/`arguments`/`super`. Rather than leave a single-purpose plugin as a permanent
+dependency, it was installed, run once with `--fix` via a temporary config file, then
+immediately uninstalled — `package.json` never carries it.
+
+## Comment style
+
+Comments were trimmed hard across the whole codebase (commit `91480ce`) — Lucas's
+explicit direction after finding them "taking up the whole page." Standard: default to
+no comment; when one's needed, one plain-language line stating the single non-obvious
+fact (a hidden constraint, a real bug lesson, a counterintuitive choice) — not restated
+code, not multi-paragraph rationale, and *not* jargon-compressed shorthand either (an
+overly-terse first attempt was rejected as unreadable without the deleted context).
+Comments protecting a real previously-hit bug or security risk (cross-tenant scoping,
+the `valueOf`/`keyOf` Object.prototype trap, the duplicate-track `ON CONFLICT IGNORE`
+note, etc.) were kept, just compressed to 1-2 lines instead of removed. Apply this
+standard to any new comment written going forward, not just the historical cleanup.
+
 ## Architecture
 
 - `index.js` (top-level) — starts the server. Just `dotenv.config()` + `createServer()`
@@ -99,7 +143,16 @@ explicit trailing argument (default: app connection), not a hidden global — ma
 this project's "explicit over implicit" preference (see musings.md).
 
 **Schema** (real knex migrations under `migrations/`, tracked via knex's own
-`knex_migrations` table, `npm run migrate`):
+`knex_migrations` table, `npm run migrate`). **One migration per table**, named
+`<timestamp>_create<Table>Table.js` (Lucas's explicit call, Sep 5 2026 — a migration's
+filename should say what schema it creates, not bundle several tables behind a generic
+`initial_schema` name). Junction tables (`artist_genres`, `song_artists`,
+`playlist_tracks`) each get their own file too, not bundled into the table they're
+attached to. `year`/`decade`/`country` are created directly in `createSongsTable`
+(not a separate `addSongDerivedColumns` migration, even though that means a pre-knex
+songs table on the droplet won't get them via bootstrap-marking — Lucas's explicit call,
+droplet/existing-data consequences are a deliberately deferred problem, not this
+migration's shape to solve):
 ```
 users(id, display_name, sync_status, sync_error,
       sync_progress_phase, sync_progress_current, sync_progress_total,
@@ -137,12 +190,21 @@ playlist_tracks(playlist_id, song_id, added_at)
   left on disk as historical record, not wired to any npm script anymore.
 
 **Bootstrapping onto a database that predates knex migrations**:
-`scripts/bootstrap-knex-migrations.js` (idempotent, one-time) marks the baseline
-migration as already-applied without running it, so its plain `CREATE TABLE`s don't
-fail against tables that already exist — every migration after the baseline then runs
-for real. A genuinely fresh install never needs this script. **Run and verified against
-local** (6218 songs, all backfilled, old view confirmed gone). **Not yet run against the
-droplet** — see Status below, this blocks the next deploy.
+`scripts/bootstrap-knex-migrations.js` (idempotent, one-time) marks all 8
+`createXTable` migrations as already-applied without running them, so their plain
+`CREATE TABLE`s don't fail against tables that already exist. A genuinely fresh install
+never needs this script. **Known gap, left unhandled on purpose**: `createSongsTable`
+now also creates `year`/`decade`/`country`, so bootstrap-marking it means a pre-knex
+`songs` table (no such columns) never gets them — Lucas's explicit call when this was
+raised (Sep 5 2026): fold the columns into `createSongsTable` regardless, and treat
+whatever that does to the droplet's existing data as a separate problem to solve at
+actual deploy time, not a reason to keep migration files split. **Not yet run against
+the droplet** — see Status below, this blocks the next deploy.
+
+Local dev's db was nuked and rebuilt fresh against the new migration files twice over
+(Sep 5 2026, still-developing/nothing-to-lose call) rather than surgically renaming
+rows in `knex_migrations` — old db backed up to
+`data/backups/playlister.db.pre-migration-split-<timestamp>` first regardless.
 
 **Decisions worth knowing if revisited**:
 - knex over Drizzle/Kysely: knex/Kysely's SQLite dialects both require `sqlite3` or
@@ -619,12 +681,18 @@ code coming up.
   + manual Sync button.
 - Preact + esbuild client rewrite.
 - 4-way visual theme switcher (Clean default / Studio / Classic / Nicolas).
+- ESLint added (no preset rules, arrow-functions-only + no-var/eqeqeq/no-unused-vars),
+  whole codebase converted to comply, and a codebase-wide comment-trim pass — see
+  "Linting" and "Comment style" above. Commit `91480ce`.
 
 **Done locally, blocking next deploy:** the knex query-layer rewrite (see "Data layer &
 query layer" above) is done and verified locally but not yet on the droplet — `node
 scripts/bootstrap-knex-migrations.js` must run once by hand over SSH on the droplet
 before its next `npm run deploy`, or that deploy's `npm run migrate` step fails trying
-to `CREATE TABLE` against a database that already has the pre-knex schema.
+to `CREATE TABLE` against a database that already has the pre-knex schema. Migrations
+were since split one-per-table (see "Bootstrapping" above) — the droplet still needs
+`npm run sync` re-run after its first migrate too, since this rewrite also nuked and
+rebuilt the *local* db from scratch (the droplet's real data isn't touched by that).
 
 **Open / not started:**
 - "Create Playlist" is a no-op stub — needs `playlist-modify-private`/
