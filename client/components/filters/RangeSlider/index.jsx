@@ -1,38 +1,33 @@
-// Two overlaid native range inputs sharing a track — the standard
-// no-library technique for a dual-handle slider. Uncontrolled on purpose:
-// the two <input>s own their own live drag value (via refs), and only call
-// back up (onCommit) once the user releases — re-rendering from props on
-// every drag tick would fight the native input's own value.
+// Two overlaid native range inputs sharing a track — the standard no-library dual-handle
+// technique. Uncontrolled (refs); only calls back once the user releases.
 import { useRef } from 'preact/hooks';
 
-export function RangeSlider({ title, min, max, step, formatValue, onCommit }) {
+export const RangeSlider = ({ title, min, max, step, formatValue, onCommit }) => {
   const lowRef = useRef(null);
   const highRef = useRef(null);
   const labelRef = useRef(null);
 
-  function updateLabel() {
+  const updateLabel = () => {
     labelRef.current.textContent = `${formatValue(Number(lowRef.current.value))} – ${formatValue(
       Number(highRef.current.value)
     )}`;
-  }
+  };
 
-  function handleInput(e) {
+  const handleInput = (e) => {
     if (Number(lowRef.current.value) > Number(highRef.current.value)) {
       if (e.target === lowRef.current) lowRef.current.value = highRef.current.value;
       else highRef.current.value = lowRef.current.value;
     }
     updateLabel();
-  }
+  };
 
-  function handleCommit() {
+  const handleCommit = () => {
     const lo = Number(lowRef.current.value);
     const hi = Number(highRef.current.value);
-    // Dragged back out to the full natural range means "not filtering" —
-    // distinct from actually filtering down to that same numeric span,
-    // since some fields (e.g. artist popularity) are null for songs with no
-    // known value, and an active min/max filter must exclude those.
+    // Full natural range means "not filtering" — some fields (e.g. popularity) are null for
+    // songs with no value, and an active filter must exclude those.
     onCommit(lo === min && hi === max ? null : lo, lo === min && hi === max ? null : hi);
-  }
+  };
 
   return (
     <div className="range-slider">
@@ -66,4 +61,4 @@ export function RangeSlider({ title, min, max, step, formatValue, onCommit }) {
       </div>
     </div>
   );
-}
+};

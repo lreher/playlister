@@ -1,33 +1,25 @@
-// Generic echarts bubble-map primitive: draws point data (already shaped
-// as [{name, value: [lon, lat, magnitude], ...}]) on top of a world map.
-// Registers the base map once — echarts.registerMap() is global to the
-// library itself, not per-instance, so that flag is module-level, not
-// component state. What each point *means* (country lookup, tooltip
-// wording, click behavior) is the caller's job, not this primitive's.
+// echarts.registerMap() is global to the library, not per-instance, hence the module-level flag.
 import { useEffect, useRef } from 'preact/hooks';
 import { getChartTheme } from '../../../themes/chartTheme';
 import { getWorldGeoJson } from '../../../api';
 
 let worldMapRegistered = false;
 
-export function WorldMap({
+export const WorldMap = ({
   points,
-  // Omit `color`/`emphasisColor` to fall back to the theme accent/emphasis.
-  // Either can also be an echarts-style callback `(params) => color`
-  // (params.value, params.dataIndex, ...) instead of a flat string, for a
-  // color that depends on each point's own data.
+  // Omit to fall back to the theme accent/emphasis; either can be an echarts-style (params) => color callback.
   color, // the bubble itself
   emphasisColor, // the bubble on hover
   formatTooltip = (p) => `${p.name}: ${p.value[2]}`,
   onPointClick,
-}) {
+}) => {
   const containerRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
     let chart;
 
-    async function draw() {
+    const draw = async () => {
       if (!worldMapRegistered) {
         const geoJson = await getWorldGeoJson();
         if (cancelled) return;
@@ -51,15 +43,9 @@ export function WorldMap({
         geo: {
           map: 'world',
           roam: true,
-          // Fully non-interactive on purpose — no hover highlight, label, or
-          // tooltip for bare landmass. The bubbles (series below) are a
-          // separate layer drawn on top and keep their own hover behavior
-          // untouched; this only silences the base map shapes themselves.
-          // (Matching regions by name to re-enable hover just for countries
-          // with data was considered and rejected — this map's own region
-          // names don't reliably match countryLabel()'s output, e.g. South
-          // Korea is just "Korea" here, so name-matching would silently
-          // miss real countries.)
+          // No hover/label on bare landmass — only the bubble layer above responds. Matching
+          // bubbles to map regions by name was tried and dropped: this map's region names
+          // don't reliably match countryLabel() (e.g. "Korea" vs South Korea).
           silent: true,
           itemStyle: {
             areaColor: chartTheme.bgElevated,
@@ -72,14 +58,11 @@ export function WorldMap({
             type: 'scatter',
             coordinateSystem: 'geo',
             data: points,
-            // sqrt scaling keeps bubble *area* (not radius) proportional to
-            // magnitude, which is what the eye actually perceives correctly.
+            // sqrt scaling keeps bubble area (not radius) proportional to magnitude.
             symbolSize: (val) => Math.sqrt(val[2]) * 3 + 4,
             itemStyle: { color: bubbleColor, opacity: 0.7 },
             cursor: onPointClick ? 'pointer' : 'default',
-            // scale: false — the tooltip already names the country on
-            // hover, so no on-map label either; and no size-grow on top of
-            // our own already-large sqrt-scaled sizing.
+            // No scale-grow on hover — bubbles are already sqrt-sized, and the tooltip names the country.
             emphasis: {
               scale: false,
               itemStyle: { color: bubbleEmphasis, opacity: 1 },
@@ -92,7 +75,7 @@ export function WorldMap({
           if (params.data) onPointClick(params.data);
         });
       }
-    }
+    };
 
     draw();
     const handleResize = () => chart?.resize();
@@ -105,4 +88,4 @@ export function WorldMap({
   }, []);
 
   return <div className="chart-container chart-container-map" ref={containerRef} />;
-}
+};

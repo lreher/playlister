@@ -7,7 +7,7 @@ const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 const REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI;
 const SCOPE = 'user-library-read playlist-read-private playlist-read-collaborative';
 
-function getAuthorizeUrl(state) {
+const getAuthorizeUrl = (state) => {
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
     response_type: 'code',
@@ -16,13 +16,11 @@ function getAuthorizeUrl(state) {
     state,
   });
   return `https://accounts.spotify.com/authorize?${params.toString()}`;
-}
+};
 
-function basicAuthHeader() {
-  return 'Basic ' + Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
-}
+const basicAuthHeader = () => 'Basic ' + Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
 
-async function fetchProfile(accessToken) {
+const fetchProfile = async (accessToken) => {
   const res = await fetch('https://api.spotify.com/v1/me', {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
@@ -31,14 +29,11 @@ async function fetchProfile(accessToken) {
   }
   const data = await res.json();
   return { id: data.id, displayName: data.display_name ?? null };
-}
+};
 
-// Exchanges the OAuth code, then resolves *who* just logged in (Spotify's
-// own user id) so the caller can set up a session — this app has no
-// separate account system, Spotify's own identity IS the login. Always
-// called from the /callback route (main connection, the default) — never
-// from the sync path, so no caller needs to pass knexInstance explicitly.
-async function exchangeCodeForTokens(code, knexInstance = db) {
+// Exchanges the OAuth code and resolves who logged in — Spotify's own identity is the
+// login here, there's no separate account system.
+const exchangeCodeForTokens = async (code, knexInstance = db) => {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
     code,
@@ -73,12 +68,9 @@ async function exchangeCodeForTokens(code, knexInstance = db) {
   );
 
   return { userId: profile.id, displayName: profile.displayName };
-}
+};
 
-// scripts/sync.js's runFastSync passes the sync connection explicitly here
-// (via getValidAccessToken below) — a token refresh triggered mid-sync
-// shouldn't contend with the app connection either.
-async function refreshAccessToken(userId, refreshToken, knexInstance = db) {
+const refreshAccessToken = async (userId, refreshToken, knexInstance = db) => {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
@@ -110,9 +102,9 @@ async function refreshAccessToken(userId, refreshToken, knexInstance = db) {
   );
 
   return data.access_token;
-}
+};
 
-async function getValidAccessToken(userId, knexInstance = db) {
+const getValidAccessToken = async (userId, knexInstance = db) => {
   const current = await tokens.get(userId, knexInstance);
   if (!current) return null;
 
@@ -121,9 +113,9 @@ async function getValidAccessToken(userId, knexInstance = db) {
   }
 
   return refreshAccessToken(userId, current.refresh_token, knexInstance);
-}
+};
 
-async function getLikedSongsPage(accessToken, { limit, offset }) {
+const getLikedSongsPage = async (accessToken, { limit, offset }) => {
   const params = new URLSearchParams({ limit, offset });
   const res = await fetch(`https://api.spotify.com/v1/me/tracks?${params.toString()}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -147,7 +139,7 @@ async function getLikedSongsPage(accessToken, { limit, offset }) {
     limit: data.limit,
     offset: data.offset,
   };
-}
+};
 
 module.exports = {
   getAuthorizeUrl,

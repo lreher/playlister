@@ -1,36 +1,19 @@
-// Baseline schema — the full, final desired shape (including songs.year/
-// decade/country as real stored columns, computed at write time; see
-// 20260905000002 for why those replaced the old song_details view).
+// Baseline schema. Pre-knex databases (local dev, the droplet) are manually marked as
+// already applied — 20260905000002 brings those up to date instead.
 //
-// This does NOT run against the databases that already existed before
-// knex migrations were adopted (local dev + the droplet) — those had this
-// schema already, minus the new columns and still with the old view. For
-// those two, this migration is manually marked as already-applied (a row
-// inserted into knex_migrations) so it's skipped, and 20260905000002 is
-// what actually brings them up to the current shape. A genuinely fresh
-// install runs both in order and ends up in the exact same place.
-//
-// No PRAGMA foreign_keys anywhere (SQLite's own default, left off
-// deliberately) — artist resolution (country/genres/popularity) is a
-// separate, later pass from song ingestion, so a song_artists row can
-// reference an artist not yet resolved. The `.references()` calls below on
-// playlists/tokens are unenforced without that pragma, same as they always
-// were — kept for documentation, not constraint enforcement.
-exports.up = async function up(knex) {
+// No PRAGMA foreign_keys: artist resolution runs after song ingestion, so a song_artists
+// row can reference an artist that doesn't exist yet. The .references() calls below are
+// unenforced without that pragma — kept for documentation only.
+exports.up = async (knex) => {
   await knex.schema.createTable('users', (table) => {
     table.text('id').primary(); // Spotify user id, from GET /v1/me
     table.text('display_name');
     table.text('sync_status').notNullable().defaultTo('idle'); // idle|syncing|done|error
     table.text('sync_error');
-    // Only meaningful while sync_status = 'syncing' — set by runFastSync's
-    // own progress reporting, read by /api/sync-status. NULL the rest of
-    // the time.
-    table.text('sync_progress_phase'); // 'songs' | 'playlists' | 'details'
+    table.text('sync_progress_phase'); // 'songs' | 'playlists' | 'details', NULL unless syncing
     table.integer('sync_progress_current');
     table.integer('sync_progress_total');
-    // Timestamp of the last completed fast sync, set in JS (db/users.js)
-    // at the moment sync_status becomes 'done'. NULL = never synced.
-    table.text('last_synced_at');
+    table.text('last_synced_at'); // NULL = never synced
     table.text('created_at').notNullable();
   });
 
@@ -40,10 +23,7 @@ exports.up = async function up(knex) {
     table.text('country');
     table.integer('popularity');
     table.integer('followers');
-    // Distinguishes "genres/popularity resolution has run for this artist"
-    // from "resolved to genuinely empty/null" (a real artist can have no
-    // genres at all).
-    table.integer('details_resolved').notNullable().defaultTo(0);
+    table.integer('details_resolved').notNullable().defaultTo(0); // resolved-but-empty vs never-resolved
   });
 
   await knex.schema.createTable('artist_genres', (table) => {
@@ -64,11 +44,7 @@ exports.up = async function up(knex) {
     table.integer('duration_ms');
     table.integer('explicit');
     table.text('spotify_url');
-    // Derived from album_release_date/isrc/the primary artist's country —
-    // computed once in JS at write time (db/songs.js), not re-derived on
-    // every read. See 20260905000002 for the migration that added these to
-    // a database that predates this design and the backfill that populated
-    // them for existing rows.
+    // Computed once at write time (db/songs.js), not re-derived on every read.
     table.integer('year');
     table.text('decade');
     table.text('country');
@@ -83,10 +59,7 @@ exports.up = async function up(knex) {
     table.index('artist_id', 'idx_song_artists_artist');
   });
 
-  // Composite PK, not just id: a real Spotify playlist can be followed by
-  // more than one Playlister account (e.g. two users both follow the same
-  // collaborative playlist) — a single-id PK would let the second user's
-  // sync silently steal the row's ownership from the first.
+  // Composite PK: two users can both follow the same real playlist, each with their own row.
   await knex.schema.createTable('playlists', (table) => {
     table.text('id').notNullable();
     table.text('user_id').notNullable().references('id').inTable('users');
@@ -99,12 +72,8 @@ exports.up = async function up(knex) {
     table.index('user_id', 'idx_playlists_user');
   });
 
-  // Deliberately no user_id here: a real playlist's track list is the same
-  // objective content no matter which user is looking at it (same
-  // reasoning as artists/songs staying global). The one pseudo-playlist
-  // that isn't real shared Spotify data — Liked Songs — gets a per-user-
-  // unique id instead (db/playlists.js's likedSongsId) so two users'
-  // liked-songs content can never collide here.
+  // No user_id — a real playlist's tracks are global. Liked Songs gets a per-user id
+  // instead (db/playlists.js's likedSongsId) so it never collides here.
   await knex.schema.createTable('playlist_tracks', (table) => {
     table.text('playlist_id').notNullable();
     table.text('song_id').notNullable();
@@ -122,7 +91,7 @@ exports.up = async function up(knex) {
   });
 };
 
-exports.down = async function down(knex) {
+exports.down = async (knex) => {
   await knex.schema.dropTableIfExists('tokens');
   await knex.schema.dropTableIfExists('playlist_tracks');
   await knex.schema.dropTableIfExists('playlists');

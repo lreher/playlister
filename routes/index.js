@@ -12,16 +12,11 @@ const { registerStaticRoutes } = require('./static');
 
 const router = FindMyWay();
 
-// A library older than this is re-synced automatically on the user's next
-// login — in the background (the app shows immediately with existing data),
-// unlike a first-ever sync which blocks. Also the only automatic re-sync
-// trigger; anything sooner is the manual Sync button.
+// A library older than this re-syncs automatically (in the background) on next login.
 const SYNC_STALE_MS = 24 * 60 * 60 * 1000;
 
-// Whether logging in should kick off a sync: never synced, a previous sync
-// errored, or the last one is stale. Skips if one's already running. Used
-// by /callback and /api/sync.
-async function enqueueSyncIfNeeded(userId, { force = false } = {}) {
+// Syncs on login if never synced, errored, or stale. Skips if one's already running.
+const enqueueSyncIfNeeded = async (userId, { force = false } = {}) => {
   const user = await usersDb.getById(userId);
   if (!user || user.syncStatus === 'syncing') return;
   const stale =
@@ -30,32 +25,22 @@ async function enqueueSyncIfNeeded(userId, { force = false } = {}) {
     await usersDb.setSyncStatus(userId, 'syncing');
     syncQueue.enqueueSync(userId);
   }
-}
+};
 
-// Register static routes
 registerStaticRoutes(router);
 
-// Every /api/* route requires a real session now — there's no anonymous
-// default library to fall back to any more (each user's data is theirs
-// alone). find-my-way has no middleware chaining, so this just wraps the
-// handler directly.
-function requireSession(handler) {
-  return async (req, res, ...rest) => {
+// find-my-way has no middleware chaining, so this wraps each /api/* handler directly.
+const requireSession = (handler) => async (req, res, ...rest) => {
     const userId = session.getSessionUserId(req);
-    // A validly-signed cookie can still point at a user row that no longer
-    // exists (e.g. the database was reset) — check both, not just
-    // signature validity, so a stale cookie 401s cleanly on the first
-    // request instead of the frontend having to fail its way there.
+    // A validly-signed cookie can still point at a deleted user row — check both.
     if (!userId || !(await usersDb.getById(userId))) {
-      // no-store matters here specifically: a cached 401 would keep being
-      // served from that same fixed URL even after a real login succeeds.
+      // no-store: a cached 401 would keep being served even after a real login succeeds.
       res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({ error: 'not_authenticated' }));
       return;
     }
     return handler(req, res, userId, ...rest);
   };
-}
 
 router.on('GET', '/login', (req, res) => {
   const state = session.generateState();
@@ -78,9 +63,6 @@ router.on('GET', '/callback', async (req, res) => {
   try {
     const { userId } = await spotify.exchangeCodeForTokens(code);
     session.setSessionCookie(res, userId);
-    // Only sync on login when there's a reason to (first login, prior
-    // error, or a stale library) — a returning user with a fresh library
-    // goes straight to the app. The manual Sync button covers "update now."
     await enqueueSyncIfNeeded(userId);
     res.writeHead(302, { Location: '/' });
     res.end();
@@ -113,10 +95,7 @@ router.on(
   })
 );
 
-// Manual "sync now" — the Sync button. Force-enqueues regardless of
-// staleness (that's the point of the button), unless one's already
-// running. Returns the current sync-status so the frontend can start
-// polling immediately.
+// The Sync button — force-enqueues regardless of staleness, unless one's already running.
 router.on(
   'POST',
   '/api/sync',
@@ -126,9 +105,7 @@ router.on(
   })
 );
 
-// Global, not user-scoped (see db/artists.js) — polled by the app shell
-// while browsing, separately from /api/sync-status which only matters
-// during the initial login/fast-sync wait.
+// Global, not user-scoped — polled separately from /api/sync-status.
 router.on(
   'GET',
   '/api/enrichment-status',
@@ -187,20 +164,16 @@ router.on(
   })
 );
 
-// Testing/dev tool, not a real multi-tenant feature — deletes the ENTIRE
-// database, for every user, not just the caller's. Deliberately open to
-// any logged-in session, not just one admin — Lucas's explicit call.
+// Dev tool — deletes the ENTIRE database for every user. Open to any logged-in
+// session, not gated to one admin (Lucas's explicit call).
 router.on(
   'POST',
   '/api/wipe-database',
-  requireSession((req, res, userId) => {
+  requireSession((req, res) => {
     session.clearSessionCookie(res);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    // Wait for the response to actually flush before tearing the process
-    // down — process.exit() right after queuing res.end() risks the client
-    // never seeing the response at all. The exit code matters: 1 (not 0)
-    // is what makes systemd's Restart=on-failure actually bring the
-    // process back up, fresh, against a freshly-recreated empty database.
+    // Wait for the response to flush before exiting. Exit code 1, not 0, so systemd's
+    // Restart=on-failure brings the process back up against the freshly-empty database.
     res.end(JSON.stringify({ ok: true }), () => {
       wipeDatabase();
       process.exit(1);

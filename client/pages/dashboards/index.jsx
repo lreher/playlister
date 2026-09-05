@@ -1,6 +1,4 @@
-// The Dashboards tab. Mounted lazily by App (only once the tab's been
-// visited) and never unmounted after — stats are fetched once here and
-// handed down; each chart owns its own rendering/config from there.
+// Mounted lazily by App and never unmounted after — stats are fetched once here and handed to each chart.
 import { useEffect, useState } from 'preact/hooks';
 import { getStats } from '../../api';
 import { YearBarChart } from './YearBarChart';
@@ -9,7 +7,7 @@ import { LikedBarChart } from './LikedBarChart';
 import { PopularityBarChart } from './PopularityBarChart';
 import { CountryMap } from './CountryMap';
 
-export function Dashboards({ onFilterClick }) {
+export const Dashboards = ({ onFilterClick }) => {
   const [stats, setStats] = useState(null);
 
   useEffect(() => {
@@ -27,4 +25,4 @@ export function Dashboards({ onFilterClick }) {
       <CountryMap data={stats.countryCounts} onSelect={onFilterClick} />
     </div>
   );
-}
+};

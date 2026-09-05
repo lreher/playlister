@@ -1,31 +1,17 @@
-// One-time migration: converts the existing single-tenant playlister.db
-// (one implicit user — whoever's token is in the singleton `tokens` row)
-// into the multi-tenant schema — a real `users` row for that person
-// (identified via their own stored token), and `tokens`/`playlists`
-// re-keyed by user_id. Back up data/playlister.db before running this.
-//
-// Must rename the old-shaped tables out of the way BEFORE db/database.js is
-// ever required in this process: that module's `CREATE TABLE IF NOT
-// EXISTS` calls silently no-op against tables that already exist under the
-// same name, regardless of whether the shape differs — SQLite doesn't diff
-// schemas. So this script opens its own raw connection first (bypassing
-// db/database.js entirely) to do the rename, and only then requires
-// db/database.js, so its schema-creation runs fresh against the new names.
-//
-// Idempotent: safe to re-run if it fails partway through.
+// One-time, historical: converts the old single-tenant database into the multi-tenant
+// schema (a real users row, tokens/playlists re-keyed by user_id). Back up the database
+// before running. Renames old tables before requiring db/database.js, since its CREATE
+// TABLE IF NOT EXISTS would otherwise no-op against tables with the old shape.
+// Idempotent — safe to re-run if it fails partway through.
 require('dotenv').config();
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
 
 const DB_PATH = path.join(__dirname, '../data/playlister.db');
 
-// The stored access token is very likely expired by the time this ever
-// runs (1-hour lifetime, this is a deferred one-time operation) — refresh
-// unconditionally rather than trying to check/guess staleness. Inlined
-// rather than reusing sources/spotify.js's refreshAccessToken, since that
-// persists via db/tokens.js keyed by a userId we don't have yet (that's
-// exactly what this call is trying to determine).
-async function refreshToken(refreshToken) {
+// Refreshes unconditionally (the stored token is likely long expired by now). Inlined
+// rather than sources/spotify.js's version, since that needs a userId we don't have yet.
+const refreshToken = async (refreshToken) => {
   const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken });
   const res = await fetch('https://accounts.spotify.com/api/token', {
     method: 'POST',
@@ -44,30 +30,21 @@ async function refreshToken(refreshToken) {
     refresh_token: data.refresh_token || refreshToken,
     expires_at: Date.now() + data.expires_in * 1000,
   };
-}
+};
 
-function tableExists(raw, name) {
-  return !!raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name);
-}
+const tableExists = (raw, name) => !!raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name);
 
-function hasUserIdColumn(raw, table) {
-  return raw
+const hasUserIdColumn = (raw, table) => raw
     .prepare(`PRAGMA table_info(${table})`)
     .all()
     .some((c) => c.name === 'user_id');
-}
 
-async function main() {
+const main = async () => {
   const raw = new DatabaseSync(DB_PATH);
 
-  // tokens_old existing is the real signal that a run got as far as
-  // renaming but not as far as the final DROP TABLE — NOT whether `tokens`
-  // already has the new shape. db/database.js's CREATE TABLE IF NOT EXISTS
-  // runs (and creates a fresh, empty new-shaped `tokens`) the moment it's
-  // first required, regardless of whether the data copy that follows ever
-  // succeeded — an earlier version of this guard checked `tokens`'s shape
-  // alone and could report "already migrated" against those empty tables
-  // while the real data was still sitting untouched in tokens_old.
+  // tokens_old existing means a prior run got as far as renaming but not the final DROP —
+  // checking tokens' own shape isn't enough, since requiring db/database.js recreates an
+  // empty new-shaped `tokens` regardless of whether the data copy ever ran.
   const oldTableExists = tableExists(raw, 'tokens_old');
 
   if (!tableExists(raw, 'tokens') && !oldTableExists) {
@@ -90,8 +67,6 @@ async function main() {
   }
   raw.close();
 
-  // Loads fresh now — creates users/tokens/playlists in the new shape,
-  // since the old-named ones are out of the way.
   const db = require('../db/database');
 
   const oldToken = db.prepare('SELECT * FROM tokens_old').get();
@@ -137,11 +112,8 @@ async function main() {
       insertPlaylist.run(newId, userId, p.name, p.owner_name, p.public, p.collaborative, p.snapshot_id);
     }
 
-    // playlist_tracks is global (keyed by playlist_id only, see
-    // db/database.js) — the Liked Songs pseudo-playlist is the one entity
-    // that isn't real shared Spotify data, so its rows need re-keying to
-    // the new per-user id. Real playlists' rows are untouched — their
-    // playlist_id doesn't change.
+    // Liked Songs is the one playlist that needs re-keying to the new per-user id;
+    // real playlists' playlist_id doesn't change.
     db.prepare('UPDATE playlist_tracks SET playlist_id = ? WHERE playlist_id = ?').run(
       newLikedSongsId,
       OLD_LIKED_SONGS_ID
@@ -156,7 +128,7 @@ async function main() {
   }
 
   console.log(`[migrate] done — ${oldPlaylists.length} playlists migrated to user ${userId}.`);
-}
+};
 
 main().catch((err) => {
   console.error('[migrate] failed:', err.message);

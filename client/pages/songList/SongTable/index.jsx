@@ -1,6 +1,4 @@
-// The List tab's paginated song table. Re-fetches whenever `filters`
-// (owned by App) or the local page offset changes — and when `dataVersion`
-// bumps (a sync just finished, so the underlying library changed).
+// Re-fetches on filters, page offset, or dataVersion (a sync just finished) changes.
 import { useEffect, useState } from 'preact/hooks';
 import { getSongs } from '../../../api';
 import { countryLabel } from '../../../utils/format';
@@ -9,13 +7,12 @@ import { Pagination } from '../../../components/Pagination';
 const LIMIT = 50;
 const COLUMNS = ['Name', 'Artist(s)', 'Album', 'Year', 'Added', 'Country', 'Genres'];
 
-export function SongTable({ filters, dataVersion, controls }) {
+export const SongTable = ({ filters, dataVersion, controls }) => {
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState(null);
   const [error, setError] = useState(null);
 
-  // A filter change means "start over" — always jump back to the first
-  // page. Runs before the fetch effect below on the same render pass.
+  // A filter change resets to page one; runs before the fetch effect on the same render.
   useEffect(() => {
     setOffset(0);
   }, [filters]);
@@ -32,9 +29,7 @@ export function SongTable({ filters, dataVersion, controls }) {
     };
   }, [filters, offset, dataVersion]);
 
-  // Toolbar (and the library-actions `controls` in it) stays mounted
-  // through loading/error — only the table body + pagination depend on a
-  // loaded page.
+  // Toolbar stays mounted through loading/error; only the table body + pagination need a loaded page.
   const from = page && (page.total === 0 ? 0 : page.offset + 1);
   const to = page && Math.min(page.offset + page.items.length, page.total);
 
@@ -93,4 +88,4 @@ export function SongTable({ filters, dataVersion, controls }) {
       </div>
     </>
   );
-}
+};

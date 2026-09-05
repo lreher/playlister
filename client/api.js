@@ -1,11 +1,5 @@
-// Thin fetch wrappers around the backend's JSON API. No React/Preact
-// knowledge here — components own their own loading/error state.
-
-// Every /api/* route requires a session now — a 401 means "not logged in,"
-// which App owns at the top level (shows the Connect Spotify screen), so
-// every caller here can just let it throw rather than each handling it
-// separately.
-async function fetchJson(url) {
+// A 401 means not logged in — let it throw and App handles it at the top level.
+const fetchJson = async (url) => {
   const res = await fetch(url);
   if (res.status === 401) {
     const err = new Error('not_authenticated');
@@ -17,57 +11,46 @@ async function fetchJson(url) {
     throw new Error(body.error || 'Request failed');
   }
   return res.json();
-}
+};
 
-export function getMe() {
-  return fetchJson('/api/me');
-}
+export const getMe = () => fetchJson('/api/me');
 
-export function getSyncStatus() {
-  return fetchJson('/api/sync-status');
-}
+export const getSyncStatus = () => fetchJson('/api/sync-status');
 
-export async function requestSync() {
+export const requestSync = async () => {
   const res = await fetch('/api/sync', { method: 'POST' });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || 'Failed to start sync');
   }
   return res.json();
-}
+};
 
-export function getEnrichmentStatus() {
-  return fetchJson('/api/enrichment-status');
-}
+export const getEnrichmentStatus = () => fetchJson('/api/enrichment-status');
 
-export async function wipeDatabase() {
+export const wipeDatabase = async () => {
   const res = await fetch('/api/wipe-database', { method: 'POST' });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || 'Failed to delete');
   }
   return res.json();
-}
+};
 
-export function getFilters() {
-  return fetchJson('/api/filters');
-}
+export const getFilters = () => fetchJson('/api/filters');
 
-export function getStats() {
-  return fetchJson('/api/stats');
-}
+export const getStats = () => fetchJson('/api/stats');
 
-// filters' keys are exactly the /api/songs query param names — only the
-// ones actually set (non-'', non-null) get sent.
-export function getSongs({ limit, offset, filters }) {
+// Only non-empty/non-null filter values get sent as query params.
+export const getSongs = ({ limit, offset, filters }) => {
   const params = new URLSearchParams({ limit, offset });
   for (const [key, value] of Object.entries(filters)) {
     if (value !== '' && value !== null) params.set(key, value);
   }
   return fetchJson(`/api/songs?${params.toString()}`);
-}
+};
 
-export async function getWorldGeoJson() {
+export const getWorldGeoJson = async () => {
   const res = await fetch('/world.geo.json');
   return res.json();
-}
+};

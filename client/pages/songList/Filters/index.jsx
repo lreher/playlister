@@ -1,7 +1,5 @@
-// The List tab's filter row. Composes the input primitives from
-// components/filters/ with the actual filter definitions — panel-level
-// concerns (fetching options, filter state shape, the reset mechanism) live
-// here; each primitive owns its own input behavior.
+// Panel-level concerns (fetching options, filter shape, reset) live here; each
+// components/filters/ primitive owns its own input behavior.
 import { useEffect, useState } from 'preact/hooks';
 import { getFilters } from '../../../api';
 import { countryLabel, formatDuration, formatDateShort } from '../../../utils/format';
@@ -25,30 +23,24 @@ export const EMPTY_FILTERS = {
   popularityMax: null,
 };
 
-export function Filters({ filters, onChange, onReset, dataVersion }) {
+export const Filters = ({ filters, onChange, onReset, dataVersion }) => {
   const [options, setOptions] = useState(null);
-  // Bumped on "Reset filters" — remounts the uncontrolled primitives
-  // (OptionsSearch, RangeSlider) so they snap back to their defaults.
+  // Bumped on reset to remount the uncontrolled primitives back to their defaults.
   const [resetToken, setResetToken] = useState(0);
 
-  // Re-fetches when dataVersion bumps (a sync finished) so the option
-  // lists / ranges reflect the updated library.
+  // Re-fetches when a sync finishes so option lists/ranges reflect the updated library.
   useEffect(() => {
     getFilters().then(setOptions);
   }, [dataVersion]);
 
-  function set(key) {
-    return (value) => onChange({ ...filters, [key]: value });
-  }
+  const set = (key) => (value) => onChange({ ...filters, [key]: value });
 
-  function setRange(minKey, maxKey) {
-    return (lo, hi) => onChange({ ...filters, [minKey]: lo, [maxKey]: hi });
-  }
+  const setRange = (minKey, maxKey) => (lo, hi) => onChange({ ...filters, [minKey]: lo, [maxKey]: hi });
 
-  function handleReset() {
+  const handleReset = () => {
     onReset();
     setResetToken((t) => t + 1);
-  }
+  };
 
   if (!options) return null;
 
@@ -123,8 +115,7 @@ export function Filters({ filters, onChange, onReset, dataVersion }) {
             max={Date.parse(addedRange.max)}
             step={86400000}
             formatValue={formatDateShort}
-            // Bespoke, not setRange: values need converting from epoch ms to
-            // ISO strings (or '' when cleared) before they're valid filters.
+            // Bespoke, not setRange — values need converting between epoch ms and ISO strings.
             onCommit={(lo, hi) =>
               onChange({
                 ...filters,
@@ -148,4 +139,4 @@ export function Filters({ filters, onChange, onReset, dataVersion }) {
       </div>
     </>
   );
-}
+};

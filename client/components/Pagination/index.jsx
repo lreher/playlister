@@ -1,11 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
-// Truncated page-number pagination — a fixed-width window of page numbers
-// around the current page, always the same size regardless of where
-// current sits (slides toward whichever edge it's near instead of just
-// clamping and shrinking), plus the first/last page with "…" bridging any
-// gap. Works directly off offset/limit/total, the same shape the caller
-// already tracks — no separate page-number concept to convert to/from.
+// Fixed-width window of page numbers that slides toward whichever edge it's near, plus
+// first/last page with "…" bridging any gap.
 const buildPageList = (current, pageCount, siblingCount) => {
   let start = current - siblingCount;
   let end = current + siblingCount;
@@ -33,17 +29,12 @@ const buildPageList = (current, pageCount, siblingCount) => {
   return pages;
 };
 
-// The page-number bar targets 80% of the available content width (capped
-// at #app's own 1400px max-width, not the raw viewport — otherwise on a
-// wide monitor this bar could end up visibly wider than the table sitting
-// right above it). Approximate px-per-button (width + gap); a toy app
-// doesn't need pixel-perfect DOM measurement here — being off by one
-// button just means slightly more/less padding, not a real bug.
+// Targets 80% of content width, capped at #app's 1400px max (not the raw viewport) so this
+// never ends up wider than the table above it. Button width is an estimate, not measured.
 const APPROX_BUTTON_WIDTH_PX = 56;
 const CONTENT_MAX_WIDTH_PX = 1400;
 const TARGET_WIDTH_FRACTION = 0.8;
-// Reserve slots for the first page, last page, and up to two ellipses —
-// whatever's left over is split evenly between both sides of current.
+// Reserves slots for first page, last page, and up to two ellipses.
 const RESERVED_SLOTS = 4;
 
 const computeSiblingCount = () => {
@@ -65,7 +56,7 @@ const useAvailableSiblingCount = () => {
   return siblingCount;
 };
 
-export function Pagination({ offset, limit, total, onOffsetChange }) {
+export const Pagination = ({ offset, limit, total, onOffsetChange }) => {
   const siblingCount = useAvailableSiblingCount();
   const pageCount = Math.ceil(total / limit);
   if (pageCount <= 1) return null;
@@ -93,4 +84,4 @@ export function Pagination({ offset, limit, total, onOffsetChange }) {
       )}
     </div>
   );
-}
+};

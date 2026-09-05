@@ -1,6 +1,5 @@
 const db = require('./index')();
 
-// One row per user now (was a singleton) — same get/set shape otherwise.
 const get = async (userId, knexInstance = db) => {
   const row = await knexInstance('tokens').where({ user_id: userId }).first();
   if (!row) return null;

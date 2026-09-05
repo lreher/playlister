@@ -4,7 +4,7 @@ import { countryLabel } from '../../../utils/format';
 import { COUNTRY_COORDS } from './countryCoords';
 import './colors.css';
 
-export function CountryMap({ data, onSelect }) {
+export const CountryMap = ({ data, onSelect }) => {
   const points = data
     .filter((d) => COUNTRY_COORDS[d.code])
     .map((d) => ({
@@ -25,4 +25,4 @@ export function CountryMap({ data, onSelect }) {
       />
     </div>
   );
-}
+};

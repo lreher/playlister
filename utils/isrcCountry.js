@@ -3,7 +3,7 @@ const countryNames = new Intl.DisplayNames(['en'], { type: 'region' });
 // ISRC uses "UK" for the United Kingdom instead of ISO 3166-1's "GB".
 const ISRC_REMAP = { UK: 'GB' };
 
-function countryFromIsrc(isrc) {
+const countryFromIsrc = (isrc) => {
   if (!isrc || isrc.length < 2) return null;
 
   const prefix = ISRC_REMAP[isrc.slice(0, 2).toUpperCase()] ?? isrc.slice(0, 2).toUpperCase();
@@ -14,6 +14,6 @@ function countryFromIsrc(isrc) {
   const label = countryNames.of(prefix);
   if (label === prefix || prefix === 'ZZ') return null;
   return prefix;
-}
+};
 
 module.exports = { countryFromIsrc };

@@ -1,32 +1,23 @@
-// Hand-rolled instead of pulling in a cookie/session library: Playlister is
-// both the sole writer and sole reader of exactly one cookie whose value it
-// fully controls, which is what makes the usual cookie-parsing fiddliness
-// (Set-Cookie grammar, multi-cookie interop, quoted-value edge cases) not
-// really apply here — there's nothing else to interoperate with.
+// Hand-rolled instead of a cookie library — Playlister is the sole writer and reader of
+// this one cookie, so there's no interop fiddliness (Set-Cookie grammar, multi-cookie
+// parsing) to actually handle.
 const crypto = require('crypto');
 
 const SESSION_SECRET = process.env.SESSION_SECRET;
 const COOKIE_NAME = 'sid';
-const MAX_AGE_SECONDS = 60 * 60 * 24 * 365; // 1 year — Spotify OAuth is the
-// real login here, this cookie just remembers who already completed it.
+const MAX_AGE_SECONDS = 60 * 60 * 24 * 365; // Spotify OAuth is the real login; this cookie just remembers it.
 
-function isProduction() {
-  return process.env.NODE_ENV === 'production';
-}
+const isProduction = () => process.env.NODE_ENV === 'production';
 
-function hmac(value) {
-  return crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('hex');
-}
+const hmac = (value) => crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('hex');
 
-// userId is a Spotify user id — arbitrary but URL/cookie-safe in practice;
-// base64url keeps the cookie value itself free of characters (';', '=')
-// that would otherwise need escaping.
-function sign(userId) {
+// base64url keeps the cookie value free of characters (';', '=') that would need escaping.
+const sign = (userId) => {
   const encoded = Buffer.from(userId, 'utf8').toString('base64url');
   return `${encoded}.${hmac(encoded)}`;
-}
+};
 
-function verify(cookieValue) {
+const verify = (cookieValue) => {
   if (!cookieValue) return null;
   const [encoded, signature] = cookieValue.split('.');
   if (!encoded || !signature) return null;
@@ -37,9 +28,9 @@ function verify(cookieValue) {
   if (actual.length !== expectedBuf.length || !crypto.timingSafeEqual(actual, expectedBuf)) return null;
 
   return Buffer.from(encoded, 'base64url').toString('utf8');
-}
+};
 
-function parseCookies(header) {
+const parseCookies = (header) => {
   const cookies = {};
   if (!header) return cookies;
   for (const pair of header.split(';')) {
@@ -48,14 +39,14 @@ function parseCookies(header) {
     cookies[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
   }
   return cookies;
-}
+};
 
-function getSessionUserId(req) {
+const getSessionUserId = (req) => {
   const cookies = parseCookies(req.headers.cookie);
   return verify(cookies[COOKIE_NAME]);
-}
+};
 
-function setSessionCookie(res, userId) {
+const setSessionCookie = (res, userId) => {
   const parts = [
     `${COOKIE_NAME}=${sign(userId)}`,
     'HttpOnly',
@@ -65,40 +56,34 @@ function setSessionCookie(res, userId) {
   ];
   if (isProduction()) parts.push('Secure');
   res.setHeader('Set-Cookie', parts.join('; '));
-}
+};
 
-function clearSessionCookie(res) {
+const clearSessionCookie = (res) => {
   const parts = [`${COOKIE_NAME}=`, 'HttpOnly', 'Path=/', 'Max-Age=0'];
   if (isProduction()) parts.push('Secure');
   res.setHeader('Set-Cookie', parts.join('; '));
-}
+};
 
-// OAuth CSRF protection: /login mints a random value, stashes it in its own
-// short-lived cookie (no server-side session exists yet at this point —
-// nobody's identity is known until the callback's token exchange
-// succeeds), and /callback checks the query param it gets back from Spotify
-// matches. A distinct cookie from the real session cookie so the two
-// concerns (login-in-progress vs. already-logged-in) can't be confused.
+// OAuth CSRF protection: /login mints a random value in its own short-lived cookie, and
+// /callback checks it matches the query param Spotify sends back.
 const STATE_COOKIE_NAME = 'oauth_state';
 
-function generateState() {
-  return crypto.randomBytes(16).toString('hex');
-}
+const generateState = () => crypto.randomBytes(16).toString('hex');
 
-function setStateCookie(res, state) {
+const setStateCookie = (res, state) => {
   const parts = [`${STATE_COOKIE_NAME}=${state}`, 'HttpOnly', 'SameSite=Lax', 'Path=/', 'Max-Age=600'];
   if (isProduction()) parts.push('Secure');
   res.setHeader('Set-Cookie', parts.join('; '));
-}
+};
 
-function verifyState(req, queryState) {
+const verifyState = (req, queryState) => {
   const cookies = parseCookies(req.headers.cookie);
   const cookieState = cookies[STATE_COOKIE_NAME];
   if (!cookieState || !queryState) return false;
   const a = Buffer.from(cookieState);
   const b = Buffer.from(queryState);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
+};
 
 module.exports = {
   getSessionUserId,

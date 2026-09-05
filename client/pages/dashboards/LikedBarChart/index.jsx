@@ -7,9 +7,7 @@ const monthRange = (monthStr) => {
   return { from: from.toISOString(), to: to.toISOString() };
 };
 
-export function LikedBarChart({ data, onSelect }) {
-  return (
-    <div className="dashboard-chart">
+export const LikedBarChart = ({ data, onSelect }) => <div className="dashboard-chart">
       <h2>Songs Liked Over Time</h2>
       <BarChart
         categories={data.map((d) => d.month)}
@@ -20,6 +18,4 @@ export function LikedBarChart({ data, onSelect }) {
           onSelect({ addedFrom: from, addedTo: to });
         }}
       />
-    </div>
-  );
-}
+    </div>;

@@ -1,26 +1,16 @@
-// One-time migration: reads the old JSON files and populates the new
-// SQLite tables (db/database.js). Long since run everywhere and kept only
-// for history — it still writes a `songs.added_at` column that later
-// migrations dropped, so it would now fail if re-run. Not worth updating a
-// dead script; noted so it isn't a surprise.
-//
-// Read-only against the JSON — they're
-// left on disk untouched afterward, both as a natural backup and because
-// deleting hard-won data (the country/genre/popularity enrichment took
-// real API work) isn't this script's call to make. Idempotent — every
-// insert is ON CONFLICT DO NOTHING / INSERT OR IGNORE, so re-running it
-// (e.g. after a partial run) never duplicates or clobbers anything.
+// Historical only — long since run everywhere. Writes a songs.added_at column that later
+// migrations dropped, so it would now fail if re-run; kept as a record, not maintained.
 const fs = require('fs');
 const path = require('path');
 const db = require('../db/database');
 
-function loadJson(relativePath, defaultValue) {
+const loadJson = (relativePath, defaultValue) => {
   const filePath = path.join(__dirname, '..', relativePath);
   if (!fs.existsSync(filePath)) return defaultValue;
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-}
+};
 
-function migrateArtists() {
+const migrateArtists = () => {
   const artists = loadJson('data/artists.json', []);
   const insertArtist = db.prepare(`
     INSERT INTO artists (id, name, country, popularity, followers, details_resolved)
@@ -33,16 +23,10 @@ function migrateArtists() {
   for (const artist of artists) {
     insertArtist.run({
       id: artist.id,
-      // A couple of artists.json entries have name: null (a leftover from
-      // before mapTrack started filtering null-named track artists —
-      // neither is referenced by any actual song). name is NOT NULL here,
-      // so treat it the same as the sibling entry that's already "".
-      name: artist.name ?? '',
+      name: artist.name ?? '', // a couple of old entries have name: null; column is NOT NULL
       country: artist.country ?? null,
       popularity: artist.popularity ?? null,
       followers: artist.followers ?? null,
-      // Matches the old "does the key exist at all" resolved-check —
-      // see db/database.js's details_resolved comment.
       detailsResolved: 'genres' in artist || 'popularity' in artist ? 1 : 0,
     });
     for (const genre of artist.genres ?? []) {
@@ -51,9 +35,9 @@ function migrateArtists() {
   }
   db.exec('COMMIT');
   console.log(`[migrate] ${artists.length} artists`);
-}
+};
 
-function migrateSongs() {
+const migrateSongs = () => {
   const songs = loadJson('data/songs.json', []);
   const insertSong = db.prepare(`
     INSERT INTO songs (id, name, album_name, album_release_date, album_type, added_at, isrc, duration_ms, explicit, spotify_url)
@@ -61,10 +45,7 @@ function migrateSongs() {
     ON CONFLICT(id) DO NOTHING
   `);
   const insertSongArtist = db.prepare('INSERT OR IGNORE INTO song_artists (song_id, artist_id, position) VALUES (?, ?, ?)');
-  // Defensive only — every song's artists should already exist from
-  // migrateArtists(), but if one somehow doesn't, this keeps the row
-  // consistent with a fresh sync's own behavior (db/songs.js's
-  // mergeTracks does the same stub-insert).
+  // Defensive stub-insert in case an artist wasn't already created by migrateArtists().
   const upsertArtistStub = db.prepare('INSERT INTO artists (id, name) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name');
 
   db.exec('BEGIN');
@@ -88,9 +69,9 @@ function migrateSongs() {
   }
   db.exec('COMMIT');
   console.log(`[migrate] ${songs.length} songs`);
-}
+};
 
-function migratePlaylists() {
+const migratePlaylists = () => {
   const playlists = loadJson('data/playlists.json', []);
   const insertPlaylist = db.prepare(`
     INSERT INTO playlists (id, name, owner_name, public, collaborative, snapshot_id)
@@ -115,9 +96,9 @@ function migratePlaylists() {
   }
   db.exec('COMMIT');
   console.log(`[migrate] ${playlists.length} playlists`);
-}
+};
 
-function migrateTokens() {
+const migrateTokens = () => {
   const tokens = loadJson('data/tokens.json', null);
   if (!tokens) {
     console.log('[migrate] no tokens.json found, skipping');
@@ -128,14 +109,14 @@ function migrateTokens() {
      ON CONFLICT(id) DO UPDATE SET access_token = ?, refresh_token = ?, expires_at = ?`
   ).run(tokens.access_token, tokens.refresh_token, tokens.expires_at, tokens.access_token, tokens.refresh_token, tokens.expires_at);
   console.log('[migrate] tokens (session preserved, no need to re-log-in)');
-}
+};
 
-function main() {
+const main = () => {
   migrateArtists();
   migrateSongs();
   migratePlaylists();
   migrateTokens();
   console.log('[migrate] done');
-}
+};
 
 main();

@@ -1,19 +1,9 @@
-// Replaces the old song_details VIEW (which computed country/year/decade
-// live, on every read, via COALESCE/substr/a custom SQL function) with
-// real stored columns on songs, computed once here (and from now on, at
-// write time in db/songs.js/db/artists.js) instead of recomputed on every
-// query. See playlister_focus.md for the fuller reasoning.
-//
-// Guards every step so this is safe to run on:
-// - a genuinely fresh install (20260905000001 already created these
-//   columns and never created the view — everything below becomes a
-//   harmless no-op)
-// - the pre-existing local/droplet databases (20260905000001 was marked
-//   applied without running, so these columns don't exist yet and the old
-//   view does — this is the real migration for them)
+// Replaces the old song_details VIEW (computed live on every read) with real stored
+// columns on songs. Safe on both a fresh install (no-ops) and a pre-existing database
+// (does the real backfill).
 const isrcCountry = require('../utils/isrcCountry');
 
-exports.up = async function up(knex) {
+exports.up = async (knex) => {
   const hasYear = await knex.schema.hasColumn('songs', 'year');
   if (!hasYear) {
     await knex.schema.alterTable('songs', (table) => {
@@ -23,12 +13,9 @@ exports.up = async function up(knex) {
     });
   }
 
-  // One JOIN to get every song's own fields plus its primary artist's
-  // already-resolved country (if any) — everything needed to compute the
-  // three derived columns, in one pass rather than one query per song.
   const rows = await knex('songs')
-    .leftJoin('song_artists', function joinPrimaryArtist() {
-      this.on('song_artists.song_id', '=', 'songs.id').andOn('song_artists.position', '=', 0);
+    .leftJoin('song_artists', (join) => {
+      join.on('song_artists.song_id', '=', 'songs.id').andOn('song_artists.position', '=', 0);
     })
     .leftJoin('artists', 'artists.id', 'song_artists.artist_id')
     .select('songs.id as id', 'songs.album_release_date as albumReleaseDate', 'songs.isrc as isrc', 'artists.country as primaryArtistCountry');
@@ -45,12 +32,11 @@ exports.up = async function up(knex) {
   await knex.schema.dropViewIfExists('song_details');
 };
 
-exports.down = async function down(knex) {
+exports.down = async (knex) => {
   await knex.schema.alterTable('songs', (table) => {
     table.dropColumn('year');
     table.dropColumn('decade');
     table.dropColumn('country');
   });
-  // Not recreating song_details here — it's gone for good as of this
-  // change, not something rollback is expected to restore.
+  // song_details is gone for good — rollback doesn't recreate it.
 };

@@ -1,8 +1,7 @@
 const db = require('./index')();
 const songsDb = require('./songs');
 
-function rowToArtist(row, genres) {
-  return {
+const rowToArtist = (row, genres) => ({
     id: row.id,
     name: row.name,
     country: row.country,
@@ -10,8 +9,7 @@ function rowToArtist(row, genres) {
     popularity: row.popularity,
     followers: row.followers,
     detailsResolved: !!row.details_resolved,
-  };
-}
+  });
 
 const getAll = async (knexInstance = db) => {
   const rows = await knexInstance('artists').select('*');
@@ -36,19 +34,10 @@ const getGenres = async (id, knexInstance = db) => (await getById(id, knexInstan
 const getPopularity = async (id, knexInstance = db) => (await getById(id, knexInstance))?.popularity ?? null;
 const getFollowers = async (id, knexInstance = db) => (await getById(id, knexInstance))?.followers ?? null;
 
-// Merges `patch` into the artist's stored record (creating it if it's
-// new). A key present in `patch` overrides (even if the value is null —
-// that's how "resolved, but genuinely no country found" gets recorded); a
-// key absent from `patch` keeps whatever's already stored.
-//
-// When `patch.country` is a real (non-null) value, this also propagates it
-// to every song where this artist is the primary artist (see
-// songsDb.updatePrimaryArtistCountry) — those songs store their own
-// country rather than live-joining it, so this is the one place that value
-// needs to be kept in sync. A `patch.country` of null (resolution ran and
-// found nothing) deliberately does NOT propagate — a song's existing
-// ISRC-derived fallback (set at insert time) should never be blanked out
-// by a "still unresolved" result.
+// Merges patch into the artist's record. A key present in patch overrides (even if
+// null — that's how "resolved to nothing" is recorded); a key absent keeps the old value.
+// A real (non-null) country also propagates to that artist's songs; a null one doesn't,
+// so it can never blank out a song's existing ISRC-derived fallback.
 const upsert = async (id, patch, knexInstance = db) => {
   await knexInstance.transaction(async (trx) => {
     const existing = await trx('artists').where({ id }).first();
@@ -59,8 +48,7 @@ const upsert = async (id, patch, knexInstance = db) => {
       country: 'country' in patch ? patch.country : (existing?.country ?? null),
       popularity: 'popularity' in patch ? patch.popularity : (existing?.popularity ?? null),
       followers: 'followers' in patch ? patch.followers : (existing?.followers ?? null),
-      // Genres/popularity only ever arrive together, from the one details
-      // backfill pass — either key showing up means that pass has run.
+      // genres/popularity arrive together — either key means that backfill pass has run.
       details_resolved: 'genres' in patch || 'popularity' in patch ? 1 : (existing?.details_resolved ?? 0),
     };
     await trx('artists').insert(record).onConflict('id').merge(record);
@@ -72,7 +60,7 @@ const upsert = async (id, patch, knexInstance = db) => {
       }
     }
 
-    if ('country' in patch && patch.country != null) {
+    if ('country' in patch && patch.country !== null && patch.country !== undefined) {
       await songsDb.updatePrimaryArtistCountry(id, patch.country, trx);
     }
   });
@@ -80,10 +68,7 @@ const upsert = async (id, patch, knexInstance = db) => {
   return getById(id, knexInstance);
 };
 
-// Computed live from the actual rows, not a separate persisted counter —
-// enrichment progress is always exactly reconstructable from real
-// resolved/unresolved counts. Global, same as the rest of enrichment — not
-// scoped to any one user.
+// Computed live from actual rows rather than a persisted counter. Global, not per-user.
 const getEnrichmentStatus = async (knexInstance = db) => {
   const total = (await knexInstance('artists').count('* as c').first()).c;
   const countriesResolved = (await knexInstance('artists').whereNotNull('country').count('* as c').first()).c;

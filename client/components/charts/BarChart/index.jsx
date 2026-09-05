@@ -1,23 +1,17 @@
-// Generic echarts bar chart primitive. categories/values are whole-library
-// stats fetched once by Dashboards.jsx — stable for this component's
-// lifetime, so the chart is built once (empty deps) and just resized on
-// window resize. Theme is read fresh at build time (getChartTheme), so a
-// theme switch recolors it on the next Dashboards remount.
+// Built once (empty deps) since categories/values are stable for this component's lifetime;
+// theme is read fresh, so a remount recolors it after a theme switch.
 import { useEffect, useRef } from 'preact/hooks';
 import { getChartTheme, baseChartOption, barGradient } from '../../../themes/chartTheme';
 
-export function BarChart({
+export const BarChart = ({
   categories,
   values,
   rotateLabels,
-  // Omit both to get the shared theme look: a purple->magenta gradient
-  // fill (flat green in the classic theme), orange on hover. Either can
-  // also be an echarts-style callback `(params) => color` (params.value,
-  // params.dataIndex, ...) for a color that depends on each bar's own data.
+  // Omit both for the shared gradient look; either can be an echarts-style (params) => color callback.
   color,
   emphasisColor,
   onClickCategory,
-}) {
+}) => {
   const containerRef = useRef(null);
 
   useEffect(() => {
@@ -60,4 +54,4 @@ export function BarChart({
   }, []);
 
   return <div className="chart-container" ref={containerRef} />;
-}
+};

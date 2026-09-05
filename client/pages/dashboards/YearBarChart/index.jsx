@@ -1,8 +1,6 @@
 import { BarChart } from '../../../components/charts/BarChart';
 
-export function YearBarChart({ data, onSelect }) {
-  return (
-    <div className="dashboard-chart">
+export const YearBarChart = ({ data, onSelect }) => <div className="dashboard-chart">
       <h2>Songs by Release Year</h2>
       <BarChart
         categories={data.map((d) => d.year)}
@@ -10,6 +8,4 @@ export function YearBarChart({ data, onSelect }) {
         rotateLabels
         onClickCategory={(year) => onSelect({ year })}
       />
-    </div>
-  );
-}
+    </div>;

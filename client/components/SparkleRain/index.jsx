@@ -1,34 +1,25 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import './style.css';
 
-// Same clashing-neon-plus-white palette as the rest of the Nicolas theme
-// (index.css's --grad-*/--accent tokens) — not read from CSS vars since
-// each sparkle needs its own independently-random pick, not the theme's
-// single accent.
+// Same palette as the rest of Nicolas theme, picked per-sparkle instead of read from CSS vars.
 const SPARKLE_COLORS = ['#ffffff', '#ff1493', '#7cff00', '#ffd000', '#17c3b2', '#9b3fe0'];
 const SPARKLE_COUNT = 40;
 
 const randomBetween = (min, max) => min + Math.random() * (max - min);
 
-function makeSparkles() {
-  return Array.from({ length: SPARKLE_COUNT }, (_, i) => ({
+const makeSparkles = () => Array.from({ length: SPARKLE_COUNT }, (_, i) => ({
     id: i,
     left: `${randomBetween(0, 100)}%`,
     size: `${randomBetween(8, 22)}px`,
     color: SPARKLE_COLORS[Math.floor(Math.random() * SPARKLE_COLORS.length)],
     duration: `${randomBetween(7, 16)}s`,
-    // Negative delay starts each sparkle mid-fall instead of every one
-    // dropping from the top together on first paint.
+    // Negative delay starts each sparkle mid-fall instead of all dropping from the top together.
     delay: `-${randomBetween(0, 16)}s`,
   }));
-}
 
-// Watches <html data-theme> directly rather than taking a theme prop, so
-// this renders correctly on every screen App.jsx shows — including the
-// pre-login/loading states that exist before App's own theme state does.
-// 'studio' is the bare :root (see client/theme.js), so absence of the
-// attribute correctly means "not nicolas" here too.
-function useIsNicolas() {
+// Watches data-theme directly instead of taking a prop, so this works on pre-login screens
+// too, before App's own theme state exists.
+const useIsNicolas = () => {
   const [isNicolas, setIsNicolas] = useState(() => document.documentElement.dataset.theme === 'nicolas');
 
   useEffect(() => {
@@ -40,9 +31,9 @@ function useIsNicolas() {
   }, []);
 
   return isNicolas;
-}
+};
 
-export function SparkleRain() {
+export const SparkleRain = () => {
   const isNicolas = useIsNicolas();
   const sparkles = useMemo(makeSparkles, []);
 
@@ -66,4 +57,4 @@ export function SparkleRain() {
       ))}
     </div>
   );
-}
+};

@@ -1,19 +1,14 @@
-// Free-text search backed by a native datalist, constrained to a known set
-// of values — the datalist-driven counterpart to OptionsSelect. Uncontrolled
-// (remounted via `resetKey`, not driven by a value prop) — the backend
-// filter is exact-match, so typing has to be unconstrained while the user
-// is mid-value; forcing a value prop onto it would fight that.
+// Uncontrolled (remounted via resetKey) since the backend filter is exact-match —
+// typing has to stay unconstrained mid-value.
 import { useId } from 'preact/hooks';
 
-export function OptionsSearch({ options, placeholder, onChange, resetKey }) {
+export const OptionsSearch = ({ options, placeholder, onChange, resetKey }) => {
   const optionSet = new Set(options);
   const listId = useId();
 
   return (
     <>
-      {/* Fires both when typing a full exact value and when picking a
-          native datalist suggestion. Only applies the change once the typed
-          value is empty (clear) or matches a known option — avoids firing a
+      {/* Only applies once the typed value is empty or matches a known option — avoids a
           request per keystroke on a still-partial value. */}
       <input
         key={resetKey}
@@ -33,4 +28,4 @@ export function OptionsSearch({ options, placeholder, onChange, resetKey }) {
       </datalist>
     </>
   );
-}
+};
