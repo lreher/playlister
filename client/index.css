@@ -245,9 +245,13 @@
 :root[data-theme='clean'] #app,
 :root[data-theme='clean'] #events,
 :root[data-theme='clean'] #filters,
-:root[data-theme='clean'] .chart-container,
 :root[data-theme='clean'] .card {
   background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.6);
+  box-shadow: 0 8px 28px rgba(70, 90, 150, 0.1);
+}
+
+:root[data-theme='clean'] .chart-container {
   border-color: rgba(255, 255, 255, 0.6);
   box-shadow: 0 8px 28px rgba(70, 90, 150, 0.1);
 }
@@ -256,15 +260,23 @@
    the tallest, most-scrolled element on the page. A blurred backdrop has
    to be resampled every scroll frame as it moves across the fixed page
    gradient behind it; over an area this large that's real, felt lag.
-   Solid instead of blurred here; the smaller, mostly-static filters/chart
-   cards below keep the frosted-glass blur since they don't pay that cost. */
+   Solid instead of blurred here; the smaller, mostly-static filters cards
+   below keep the frosted-glass blur since they don't pay that cost. */
 :root[data-theme='clean'] #app,
 :root[data-theme='clean'] #events {
   background: rgba(255, 255, 255, 0.55);
 }
 
+/* Dashboards renders 5 of these at once, each holding an animating ECharts
+   canvas (entrance animation + hover repaints) — backdrop-filter has to
+   recomposite the blur+saturate on every one of those frames, for all 5
+   simultaneously. That's real, felt lag specific to this page. Solid
+   instead of blurred here, same reasoning as #app/#events above. */
+:root[data-theme='clean'] .chart-container {
+  background: rgba(255, 255, 255, 0.55);
+}
+
 :root[data-theme='clean'] #filters,
-:root[data-theme='clean'] .chart-container,
 :root[data-theme='clean'] .card {
   backdrop-filter: blur(20px) saturate(150%);
   -webkit-backdrop-filter: blur(20px) saturate(150%);
