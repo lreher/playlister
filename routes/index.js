@@ -4,8 +4,11 @@ const session = require('../sources/session');
 const syncQueue = require('../sources/syncQueue');
 const { wipeDatabase } = require('../sources/wipeDatabase');
 const enrichmentProgress = require('../sources/enrichmentProgress');
+const eventsSearch = require('../sources/eventsSearch');
+const eventsSearchProgress = require('../sources/eventsSearchProgress');
 const usersDb = require('../db/users');
 const artistsDb = require('../db/artists');
+const eventsDb = require('../db/events');
 const songsController = require('../controllers/songs');
 const { getQueryParams, sendJson } = require('./utils');
 const { registerStaticRoutes } = require('./static');
@@ -161,6 +164,32 @@ router.on(
   '/api/stats',
   requireSession(async (req, res, userId) => {
     sendJson(res, await songsController.getStats(userId));
+  })
+);
+
+router.on(
+  'GET',
+  '/api/events',
+  requireSession(async (req, res, userId) => {
+    sendJson(res, await eventsDb.getForUser(userId));
+  })
+);
+
+// Global, not user-scoped — same shape as /api/enrichment-status. No-ops if already running.
+router.on(
+  'POST',
+  '/api/events/search',
+  requireSession((req, res) => {
+    eventsSearch.enqueue();
+    sendJson(res, eventsSearchProgress.getStatus());
+  })
+);
+
+router.on(
+  'GET',
+  '/api/events/search-status',
+  requireSession((req, res) => {
+    sendJson(res, eventsSearchProgress.getStatus());
   })
 );
 

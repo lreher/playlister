@@ -59,8 +59,8 @@ export const SongTable = ({ filters, dataVersion, controls }) => {
       {error && <div className="table-message">Error: {error}</div>}
       {!error && !page && <div className="table-message">Loading…</div>}
       {page && (
-        <div className="songs-table-wrap">
-          <table className="songs-table">
+        <div className="data-table-wrap">
+          <table className="data-table songs-table">
             <tr>
               {COLUMNS.map((label) => (
                 <th key={label}>{label}</th>

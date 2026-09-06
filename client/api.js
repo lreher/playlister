@@ -50,6 +50,19 @@ export const getSongs = ({ limit, offset, filters }) => {
   return fetchJson(`/api/songs?${params.toString()}`);
 };
 
+export const getEvents = () => fetchJson('/api/events');
+
+export const requestEventsSearch = async () => {
+  const res = await fetch('/api/events/search', { method: 'POST' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to start search');
+  }
+  return res.json();
+};
+
+export const getEventsSearchStatus = () => fetchJson('/api/events/search-status');
+
 export const getWorldGeoJson = async () => {
   const res = await fetch('/world.geo.json');
   return res.json();

@@ -122,7 +122,7 @@
   color: #ff1493;
 }
 
-:root[data-theme='nicolas'] .songs-table th {
+:root[data-theme='nicolas'] .data-table th {
   background: #ff1493;
   color: #ffff00;
   border-bottom-color: #7cff00;
@@ -243,6 +243,7 @@
 }
 
 :root[data-theme='clean'] #app,
+:root[data-theme='clean'] #events,
 :root[data-theme='clean'] #filters,
 :root[data-theme='clean'] .chart-container,
 :root[data-theme='clean'] .card {
@@ -251,13 +252,14 @@
   box-shadow: 0 8px 28px rgba(70, 90, 150, 0.1);
 }
 
-/* #app has no fixed height — it grows with the whole song table, so it's
+/* #app/#events have no fixed height — each grows with its own table, so it's
    the tallest, most-scrolled element on the page. A blurred backdrop has
    to be resampled every scroll frame as it moves across the fixed page
    gradient behind it; over an area this large that's real, felt lag.
    Solid instead of blurred here; the smaller, mostly-static filters/chart
    cards below keep the frosted-glass blur since they don't pay that cost. */
-:root[data-theme='clean'] #app {
+:root[data-theme='clean'] #app,
+:root[data-theme='clean'] #events {
   background: rgba(255, 255, 255, 0.55);
 }
 
@@ -274,7 +276,7 @@
   border-color: rgba(120, 135, 190, 0.35);
 }
 
-:root[data-theme='clean'] .songs-table th {
+:root[data-theme='clean'] .data-table th {
   background: rgba(255, 255, 255, 0.15);
 }
 
@@ -322,7 +324,8 @@ h1 {
   color: var(--text-muted);
 }
 
-#app {
+#app,
+#events {
   max-width: 1400px;
   margin: 0 auto;
   background: var(--panel-bg);
@@ -744,7 +747,8 @@ h1 {
   filter: brightness(1.08);
 }
 
-.create-playlist-button {
+.create-playlist-button,
+.search-button {
   margin-left: auto;
 }
 
@@ -754,17 +758,17 @@ h1 {
   padding: 1.5rem 0.25rem;
 }
 
-.songs-table-wrap {
+.data-table-wrap {
   overflow-x: auto;
 }
 
-.songs-table {
+.data-table {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
 }
 
-.songs-table th {
+.data-table th {
   position: sticky;
   top: 0;
   background: var(--bg-elevated);
@@ -778,7 +782,7 @@ h1 {
   border-bottom: 1px solid var(--border);
 }
 
-.songs-table td {
+.data-table td {
   padding: 0.6rem 1rem;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
@@ -786,10 +790,11 @@ h1 {
   text-overflow: ellipsis;
 }
 
-.songs-table tr:hover td {
+.data-table tr:hover td {
   background: var(--row-hover);
 }
 
+/* Year/Added/Country - Songs-specific column emphasis, not part of the generic table look. */
 .songs-table td:nth-child(4),
 .songs-table td:nth-child(5),
 .songs-table td:nth-child(7) {

@@ -69,6 +69,22 @@ const upsert = async (id, patch, knexInstance = db) => {
 };
 
 // Computed live from actual rows rather than a persisted counter. Global, not per-user.
+const getAllNames = async (knexInstance = db) => knexInstance('artists').select('id', 'name');
+
+// Same "visible to user" scoping as controllers/songs.js's visibleToUser, duplicated here
+// rather than imported since that's a controller-layer helper, not a db-layer export.
+const getNamesForUser = async (userId, knexInstance = db) =>
+  knexInstance('artists as a')
+    .join('song_artists as sa', 'sa.artist_id', 'a.id')
+    .whereExists(
+      knexInstance('playlist_tracks')
+        .select(1)
+        .join('playlists', 'playlists.id', 'playlist_tracks.playlist_id')
+        .where('playlist_tracks.song_id', knexInstance.ref('sa.song_id'))
+        .andWhere('playlists.user_id', userId)
+    )
+    .distinct('a.id', 'a.name');
+
 const getEnrichmentStatus = async (knexInstance = db) => {
   const total = (await knexInstance('artists').count('* as c').first()).c;
   const countriesResolved = (await knexInstance('artists').whereNotNull('country').count('* as c').first()).c;
@@ -87,5 +103,7 @@ module.exports = {
   getPopularity,
   getFollowers,
   upsert,
+  getAllNames,
+  getNamesForUser,
   getEnrichmentStatus,
 };

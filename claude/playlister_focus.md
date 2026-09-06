@@ -198,8 +198,9 @@ now also creates `year`/`decade`/`country`, so bootstrap-marking it means a pre-
 `songs` table (no such columns) never gets them — Lucas's explicit call when this was
 raised (Sep 5 2026): fold the columns into `createSongsTable` regardless, and treat
 whatever that does to the droplet's existing data as a separate problem to solve at
-actual deploy time, not a reason to keep migration files split. **Not yet run against
-the droplet** — see Status below, this blocks the next deploy.
+actual deploy time, not a reason to keep migration files split. **This has now been run
+against the droplet — see "Droplet migration (Sep 5 2026)" below for exactly what was
+done and what's still in flight.**
 
 Local dev's db was nuked and rebuilt fresh against the new migration files twice over
 (Sep 5 2026, still-developing/nothing-to-lose call) rather than surgically renaming
@@ -372,10 +373,146 @@ existing Previous/Next buttons above (both coexist). Works directly off
 
 ## Events tab
 
-Third tab, `client/pages/events/index.jsx` — a deliberate empty stub ("just an empty
-page with a big TBD in the middle," Lucas's words), added specifically as a real test
-case for the first `npm run deploy` run (see the Cloudflare caching gotcha under
-Deployment). No real feature defined yet — see Status below.
+Third tab. Was a deliberate empty "TBD" stub (added as a real test case for the first
+`npm run deploy` run — see the Cloudflare caching gotcha under Deployment); now a real
+feature, built Sep 5-6 2026: **finds real upcoming São Paulo/Rio de Janeiro/Belo
+Horizonte concerts for artists actually in your own synced library**, matched and
+filtered per-user like everything else in this app.
+
+**Why this shape, not a ticketing API**: mainstream concert APIs (Ticketmaster, Songkick,
+Bandsintown) either don't meaningfully cover Brazil or are dead ends for this use case —
+see "Sources ruled out" below. The only sources that actually catch what Lucas wants
+(small venues, tribute nights, not just arena tours) are two real, freely-fetchable
+sources with no official API at all.
+
+**Sources actually used**:
+- **Polvo Manco** — a public Google Sheets spreadsheet
+  (`1AIoSqsiZXkvLVte5mBdrZzMFJGXczAby8TN4QtnSHQo`), fetched via its plain CSV export URL
+  (`.../export?format=csv&gid=<tab>`), no auth/API needed. **Critical, hard-won finding**:
+  this is a **nationwide** spreadsheet — **25 separate tabs, one per Brazilian state** —
+  discovered only after Lucas manually spotted a real Rio de Janeiro date (The Cat
+  Empire, Circo Voador) that never showed up in the app. The pipeline had only ever
+  fetched `gid=0` (São Paulo); RJ is `gid=638829625`, MG is `gid=1591065224`. All three
+  are pulled now (`sources/eventsSearch.js`'s `POLVO_MANCO_GIDS`); the other 22 state
+  tabs exist and are deliberately not pulled (Lucas's scope: "only those 2" beyond SP).
+  Each tab is already fully scoped to its own state's cities — no city-name filtering
+  needed once you're reading the right tab (an earlier hardcoded São-Paulo-city-name
+  allowlist was built, then thrown away once this was understood). Sheet's own columns:
+  `EVENTO, DATA, LOCAL, HORA, VALOR (R$), CIDADE, INGRESSOS` — a leading disclaimer row
+  precedes the real header, so the header is located by content (`=== 'EVENTO'`), not by
+  row index.
+- **Ao Vivo** (`aovivo.substack.com`) — an independent weekly newsletter, exactly the
+  small-venue/indie-show long tail ticketing platforms miss (Casa Natura Musical, Bar
+  Templo, Sesc units, etc.). **Its RSS feed is a dead end for content** — `content:encoded`
+  is truncated to a teaser paragraph + "Read more" link, not the real 100+-event weekly
+  list; the feed is only used to find the latest `"Ao vivo: shows de ..."` post's real URL
+  (other feed titles like `"🎫 Shows no Sesc..."` are one-off announcements, filtered out
+  by title regex), then that page's actual HTML is fetched for the real content. Its
+  format is a single regex away from structured (`EVENT_RE` in `eventsSearch.js`): `Artist
+  -- Weekday, às Time 📍 Venue -- Neighborhood 🎼 Genre 🔗 Mais informações [📝 Note]`.
+  Dates are **not stated per-event** — only a "🕶 D/M, weekday" header line precedes each
+  day's block (glued onto that day's first artist name, stripped via `stripDayHeader`) —
+  so the actual date is tracked as running state through the regex matches, combined with
+  the post's own RSS `pubDate` for the year (the post text itself never states one).
+
+**Sources ruled out, confirmed by direct testing, not assumption**:
+- **Bandsintown**'s old "just pass any `app_id`" REST API is genuinely dead now — a real
+  request got an AWS API-Gateway `"explicit deny in an identity-based policy"`, not a
+  missing-key error. Docs/blog posts describing it as still-open are stale.
+- **Songkick** actively blocks plain scripted requests (`406`, even with full
+  browser-shaped headers) despite its pages being server-rendered — real bot protection,
+  not a quick scrape target.
+- **Shows do Sesc SP** newsletter (the obvious "official Sesc programming" source) has
+  been paused indefinitely since Sept 2025 (curator moved abroad) — confirmed via its own
+  RSS `pubDate`, not just a stale-looking site.
+- **Sympla** (Brazil's dominant ticketing platform) — confirmed feasible but **not yet
+  built**: real event data sits directly in server-rendered HTML (no headless browser
+  needed), just behind obfuscated/hashed CSS-module class names, no `schema.org` markup.
+
+**Matching** (`sources/eventsSearch.js`): every event's raw artist-name field is matched
+against artist names, case/accent/whitespace-insensitive (`normalizeName`). Multi-artist
+fields are genuinely messy and need real splitting, not just `,`: `"A + B"`, `"A & B"`,
+`"A, B e C"` (Portuguese "and"), `"Festival Name | A, B"` (prefix), `"A, B @ Subtitle"`
+(suffix) — all handled by `splitPerformers`. **Known accepted gap**: short/common names
+(`BK`, `Beck`, `mgk`) can false-positive-match against an unrelated same-named entry —
+Lucas's explicit call to leave these shown as-is, no confidence flag, rather than hide or
+mark them.
+
+**Architecture — global cache + per-user visibility, same pattern as songs/artists**:
+matching runs against **every known artist** (`artistsDb.getAllNames()`), not scoped to
+one user — mirrors how country/genre resolution already works over the whole artist
+table. Results persist globally (`events` + `event_artists` tables); "your events"
+is a read-time filter (`db/events.js`'s `getForUser`) joining through
+`event_artists → song_artists → playlist_tracks → playlists` scoped to the requesting
+`userId` — the exact same shape as `controllers/songs.js`'s `visibleToUser`. This means
+one ingestion run serves every user; no per-user re-fetching needed.
+
+**Schema**: `events` is the **first table with a surrogate id** (`increments('id')`) —
+every other table so far keys off a real external id (Spotify's) or a natural composite
+key; these sources (Polvo Manco, Ao Vivo) give none. De-dupe key across re-fetches is
+`(source, raw_artist, date, venue)` via `onConflict().merge()`. Columns: `source,
+raw_artist, date, date_label, venue, city, neighborhood, time, genre, ticket_url`.
+`event_artists(event_id, artist_id)` is the join table. `date` is a real resolved
+`YYYY-MM-DD` (see date-handling below), `date_label` keeps the original human string for
+display. `GET /api/events` additionally filters to `date >= today` server-side — past
+events are never returned, not just hidden client-side.
+
+**Date handling, both sources needed real parsing, not just storing raw strings**:
+Polvo Manco's `DATA` field is sometimes multi-day (`"05, 06 e 07/09/2026"` — only the
+*last* day carries the full date, earlier days share its month/year) — resolved to the
+*start* date for correct cross-source sorting (`parsePolvoMancoDate`). Ao Vivo has no
+per-event date at all (see Sources above) — resolved from running day-header state +
+the post's RSS year.
+
+**"Run Search" button — live-updating, same pattern as Sync/enrichment status**:
+`sources/eventsSearch.js` (the fetch/match/persist logic, used by both the button and the
+CLI) + `sources/eventsSearchProgress.js` (in-memory status, identical shape to
+`enrichmentProgress.js`) + `POST /api/events/search` (fire-and-forget `enqueue()`,
+no-ops if already running) + `GET /api/events/search-status` (polled every 1s by the
+client while running) + `scripts/fetchEvents.js` (now a thin CLI wrapper around the same
+`runEventsSearch()`). Client refetches + resets to page one automatically once the poll
+sees `status: 'done'`.
+
+**UI**: table columns Artist → Date → Venue → City → Songs (a **"Songs" column showing
+how many songs by that artist are already in your library** — reuses the same
+`playlist_tracks`-scoped counting as everything else); multiple matched artists per event
+stack vertically within their cell rather than comma-joining. Client-side pagination
+(50/page, the shared `Pagination` component) — no server pagination, the whole
+(already user-filtered, future-only) list is small enough to fetch once, same reasoning
+as Dashboards' single fetch.
+
+**CSS, a real gap found by "why does this look terrible"**: the app's whole visual
+identity (centered card, theme-aware panel background/border/shadow, Clean theme's
+frosted-glass effect, sticky table headers) was wired to the literal `#app` id and a
+`songs-table` class — nothing a new page inherits automatically. Fixed by promoting the
+table styling to a shared `.data-table`/`.data-table-wrap` class (Songs keeps a
+`songs-table` modifier for one column-specific rule) and adding `#events` everywhere
+`#app` gets panel treatment, including the Clean-theme override block.
+
+**Real bugs hit building this, worth knowing before touching this again**:
+- A script using `db/index.js`'s knex connection **hangs forever after finishing** —
+  knex's pool keeps a handle open, so the event loop never empties. Needed explicit
+  `process.exit(0)`/`process.exit(1)`, same as `scripts/sync.js` already does. Caught by
+  noticing an old "successful" run's process was still alive minutes later.
+- **A real near-miss, not just a bug**: copying a backup `.db` file directly over
+  `data/playlister.db` while stale `-wal`/`-shm` sidecar files from a *different*
+  db state still sat next to it caused SQLite to replay the old WAL onto the new file on
+  next open — silently merging two unrelated database states (`"table events already
+  exists"` was the tell). Fix: always `rm` the `-wal`/`-shm` files alongside the `.db`
+  file itself before swapping in a different database file this way, not just the main
+  file.
+
+**Local dev db note (leave for next session to know)**: `data/playlister.db` currently
+holds real data restored from `data/backups/playlister.db.pre-migration-split-20260905-200003`
+(not the empty post-migration-split state it was left in earlier) so the Events feature
+had something real to test against. Its `events`/`event_artists` tables and `events.city`
+column were added by hand via raw SQL (`better-sqlite3` `db.exec()`), **not through
+`knex migrate`** — that backup predates the per-table migration split entirely, so a real
+`npm run migrate` run against it would conflict. The actual migration files
+(`20260905000009_createEventsTable.js`, `20260905000010_createEventArtistsTable.js`) are
+correct and complete for a real fresh install or the droplet's next deploy; only this
+specific local file is in a hand-patched, off-the-books state. Don't assume
+`knex_migrations` reflects reality on this file specifically.
 
 ## Data files (all gitignored — never commit, never delete without an explicit ask)
 
@@ -610,6 +747,14 @@ use the **union of all artists' genres** (genres are naturally multi-valued alre
   crash surfaced as "Dashboards is broken" because clicking that tab re-rendered the
   whole (unmemoized) List-tab subtree too, and Preact aborts a whole render pass on a
   thrown error — where a bug is *reported* and where it *lives* are often different.
+- **A multi-row SQLite insert with `.onConflict().ignore()` fails past ~500 rows** —
+  knex compiles that combination on the SQLite dialect as a `UNION ALL` of one `SELECT`
+  per row, and SQLite's default compound-SELECT term limit is 500 (`too many terms in
+  compound SELECT`). Hit for real re-syncing a user with 5000+ Liked Songs into
+  `playlist_tracks` (`db/playlists.js`'s `set()`) — fixed by chunking the insert
+  (`TRACK_INSERT_CHUNK_SIZE = 400`), commit `c1e906c`. Watch for the same shape anywhere
+  else a `.insert(array).onConflict(...).ignore()/.merge()` call's row count isn't
+  provably small.
 
 ## Environment specifics
 
@@ -674,6 +819,60 @@ code coming up.
   diverged history — needs `git fetch && git reset --hard origin/main` on the droplet
   right after, or its `git pull` chokes.
 
+### Droplet migration (Sep 5 2026) — in progress, resume here
+
+The droplet had **6 real users** (not just Lucas — `80qi4nge4ypb6rn1t3kczlr2g`
+Miguel, `1231542486` Lucas Reher, `12155651261` Iago Pomponet,
+`sftu9tfk2kjtsh1mhel53tz3e` Nicolas, `augustocamaral` augusto, `1258042336` Jon Lu),
+32283 songs, 15877 artists, 390 playlists, still on pre-knex commit `5c52ac9` when this
+started — confirmed by directly querying the live db before touching anything, not
+assumed. This was **not** a "nuke it, nothing to lose" situation like local dev; the
+`artists` table alone represents hours of rate-limited MusicBrainz/Wikidata resolution
+that would be genuinely expensive to redo.
+
+**What was done, so it isn't redone or misunderstood as already-finished:**
+1. `systemctl stop playlister`, WAL-checkpointed, then backed up
+   (`data/playlister.db.manual-backup-20260905-231645` and
+   `data/playlister.db.pre-table-surgery-20260905-232016`) — **keep these, don't delete
+   without asking**, they're the only pre-migration snapshot of real multi-user data.
+2. A one-time script (`/tmp/bootstrap-partial.js` on the droplet, not committed —
+   same idea as `scripts/bootstrap-knex-migrations.js` but a **partial** baseline)
+   marked only `createUsersTable`/`createArtistsTable`/`createArtistGenresTable`/
+   `createTokensTable` as already-applied (those 4 tables' data is preserved,
+   untouched), then dropped `songs`/`song_artists`/`playlists`/`playlist_tracks`
+   outright — chosen over trying to ALTER the old pre-knex versions of those 4 tables
+   in place, since they're fully repopulatable from Spotify + the intact `artists` cache.
+3. `npm run migrate` then ran for real, recreating those 4 tables fresh under the new
+   per-table migrations (`songs` now has `year`/`decade`/`country` from creation).
+   `npm run build` + `systemctl start playlister` brought the app back up — **with those
+   4 tables empty** until each user is re-synced.
+4. Repopulating uses the app's own code, not a hand-written backfill: `node
+   scripts/sync.js <userId>` per user does a real full sync from Spotify (fast — the
+   rate-limited part is artist resolution, and `resolveCountries`/`resolveArtistDetails`
+   both already skip anything with `country`/`details_resolved` already set, so they
+   effectively no-op here). Doesn't need any user to log back in — `getValidAccessToken`
+   reads each user's stored `refresh_token` and hits Spotify server-to-server.
+5. Running this for Lucas (`1231542486`) surfaced a real bug (see "Known bugs" below,
+   `db/playlists.js`'s chunked insert fix, commit `c1e906c`) — fixed, pushed, pulled and
+   restarted on the droplet before retrying.
+
+**Update (Sep 5-6 2026 session)**: Lucas's re-sync **finished successfully** — confirmed
+via `pgrep`/log tail, not assumed: it survived the `/clear` that ended the previous
+session (still running under its own detached SSH-spawned process), hit normal Wikidata
+rate-limiting on the stragglers (`recovered 59/3413 via Wikidata fuzzy search`), and
+exited with code 0 (`== Enrichment complete ==` / `== Sync complete ==`). His songs
+(6232)/playlists (48)/playlist_tracks match his pre-migration numbers. Don't re-run it.
+
+**Not yet done — pick up here:**
+- Run `node scripts/sync.js <userId>` for the remaining 5 users listed above (Miguel,
+  Iago, Nicolas, augusto, Jon Lu) — untouched since the migration, still on empty tables.
+- Sanity-check final counts against the pre-migration snapshot (32283 songs / 15877
+  artists / 390 playlists) — expect some drift from real Spotify changes since, not an
+  error.
+- Any of the 5 other users who visited the site while their tables were empty
+  (between step 3 and their own re-sync) would have seen a blank library — not
+  something to fix in data, just be aware if asked about it.
+
 ## Status / open items (as of Sep 5 2026)
 
 **Done and deployed:**
@@ -685,14 +884,23 @@ code coming up.
   whole codebase converted to comply, and a codebase-wide comment-trim pass — see
   "Linting" and "Comment style" above. Commit `91480ce`.
 
-**Done locally, blocking next deploy:** the knex query-layer rewrite (see "Data layer &
-query layer" above) is done and verified locally but not yet on the droplet — `node
-scripts/bootstrap-knex-migrations.js` must run once by hand over SSH on the droplet
-before its next `npm run deploy`, or that deploy's `npm run migrate` step fails trying
-to `CREATE TABLE` against a database that already has the pre-knex schema. Migrations
-were since split one-per-table (see "Bootstrapping" above) — the droplet still needs
-`npm run sync` re-run after its first migrate too, since this rewrite also nuked and
-rebuilt the *local* db from scratch (the droplet's real data isn't touched by that).
+**In progress — droplet migration**: the knex query-layer rewrite is deployed to the
+droplet, schema migrated, service back up, Lucas's own data fully re-synced and
+confirmed. Not finished: 5 of 6 real users still need `node scripts/sync.js <userId>` run
+to repopulate their songs/playlists under the new schema. Full detail, exact commands,
+and user-id list to resume with: **"Droplet migration (Sep 5 2026)" under Deployment,
+above** — read that before doing anything else here.
+
+**Done locally, not yet deployed — Events tab**: real São Paulo/Rio de Janeiro/Belo
+Horizonte concert discovery matched against your own library (Polvo Manco + Ao Vivo
+sources), with a live-updating "Run Search" button. Built and verified entirely locally
+this session, per Lucas's explicit "only do this locally first" instruction — **never
+deployed to the droplet, no production migration run for the new `events`/`event_artists`
+tables yet**. Full detail: "Events tab" above, read it before touching this again — it
+covers real gotchas (the spreadsheet's 25-tab-per-state structure, Ao Vivo's truncated
+RSS feed, a WAL-mode file-copy corruption near-miss, knex's hanging-process trap) that
+are easy to silently reintroduce otherwise. Sympla was researched and confirmed
+scrapable but not yet built — the next natural source to add.
 
 **Open / not started:**
 - "Create Playlist" is a no-op stub — needs `playlist-modify-private`/
@@ -701,7 +909,6 @@ rebuilt the *local* db from scratch (the droplet's real data isn't touched by th
 - ~300-350 of ~4500 artists have no resolvable country from any automated source —
   accepted as the practical ceiling. Going further would need a manual-override UI or
   manual per-artist research; not started.
-- Events tab is a deliberate empty stub — no real content has been discussed yet.
 - Static assets (`routes/static.js`) still send no `Cache-Control` header — browsers can
   cache a stale bundle after a deploy even after Cloudflare's own cache is purged.
 - The stray `artist-countries copy.json` file's origin is unexplained.

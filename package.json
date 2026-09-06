@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node index.js",
     "sync": "node scripts/sync.js",
+    "fetch-events": "node scripts/fetchEvents.js",
     "migrate": "knex migrate:latest",
     "migrate:make": "knex migrate:make",
     "migrate:rollback": "knex migrate:rollback",
