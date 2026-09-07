@@ -7,7 +7,7 @@ import { Pagination } from '../../../components/Pagination';
 const LIMIT = 50;
 const COLUMNS = ['Name', 'Artist(s)', 'Album', 'Year', 'Added', 'Country', 'Genres'];
 
-export const SongTable = ({ filters, dataVersion, controls }) => {
+export const SongTable = ({ filters, dataVersion, controls, selectedIds, onToggleSong }) => {
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState(null);
   const [error, setError] = useState(null);
@@ -53,8 +53,6 @@ export const SongTable = ({ filters, dataVersion, controls }) => {
         <p className="status">
           {error ? 'Could not load songs' : page ? `${from}-${to} of ${page.total}` : 'Loading…'}
         </p>
-        {/* Stub — real playlist creation/export is a likely next step. */}
-        <button className="page-button filled create-playlist-button">Create Playlist</button>
       </div>
       {error && <div className="table-message">Error: {error}</div>}
       {!error && !page && <div className="table-message">Loading…</div>}
@@ -67,7 +65,11 @@ export const SongTable = ({ filters, dataVersion, controls }) => {
               ))}
             </tr>
             {page.items.map((song) => (
-              <tr key={song.id}>
+              <tr
+                key={song.id}
+                className={selectedIds.has(song.id) ? 'selected' : ''}
+                onClick={() => onToggleSong(song)}
+              >
                 <td>{song.name}</td>
                 <td>{song.artists}</td>
                 <td>{song.album}</td>

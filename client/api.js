@@ -63,6 +63,19 @@ export const requestEventsSearch = async () => {
 
 export const getEventsSearchStatus = () => fetchJson('/api/events/search-status');
 
+export const createPlaylist = async ({ name, isPublic, songIds }) => {
+  const res = await fetch('/api/playlists', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, isPublic, songIds }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to create playlist');
+  }
+  return res.json();
+};
+
 export const getWorldGeoJson = async () => {
   const res = await fetch('/world.geo.json');
   return res.json();

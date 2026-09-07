@@ -10,7 +10,8 @@ const usersDb = require('../db/users');
 const artistsDb = require('../db/artists');
 const eventsDb = require('../db/events');
 const songsController = require('../controllers/songs');
-const { getQueryParams, sendJson } = require('./utils');
+const playlistsController = require('../controllers/playlists');
+const { getQueryParams, sendJson, readJsonBody } = require('./utils');
 const { registerStaticRoutes } = require('./static');
 
 const router = FindMyWay();
@@ -190,6 +191,35 @@ router.on(
   '/api/events/search-status',
   requireSession((req, res) => {
     sendJson(res, eventsSearchProgress.getStatus());
+  })
+);
+
+router.on(
+  'POST',
+  '/api/playlists',
+  requireSession(async (req, res, userId) => {
+    let payload;
+    try {
+      payload = await readJsonBody(req);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_json' }));
+      return;
+    }
+
+    const { name, isPublic, songIds } = payload;
+    if (!name || !Array.isArray(songIds) || songIds.length === 0) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'name and songIds are required' }));
+      return;
+    }
+
+    try {
+      sendJson(res, await playlistsController.createPlaylistFromSongs(userId, { name, isPublic: !!isPublic, songIds }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
   })
 );
 

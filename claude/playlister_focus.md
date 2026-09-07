@@ -278,7 +278,11 @@ client/
       index.jsx                  # renders Filters + SongTable
       Filters/                    # filter row: fetches /api/filters, owns filter-state
         shape (EMPTY_FILTERS), composes the components/filters/ primitives
-      SongTable/                   # paginated table, re-fetches on filters/offset change
+      SongTable/                   # paginated table, re-fetches on filters/offset change;
+        row click toggles selection (App.jsx owns the actual state)
+    playlist/
+      index.jsx                  # selected-songs table + Create Playlist button/modal;
+        purely presentational — no fetch of its own, see "Playlist tab"
 ```
 
 **Patterns worth knowing**:
@@ -514,6 +518,60 @@ correct and complete for a real fresh install or the droplet's next deploy; only
 specific local file is in a hand-patched, off-the-books state. Don't assume
 `knex_migrations` reflects reality on this file specifically.
 
+## Playlist tab
+
+Second tab, right after List (built Sep 7 2026). Lets you hand-pick songs out of your
+library and push them to Spotify as a real new playlist — the old toolbar "Create
+Playlist" button (a permanent no-op stub since it was first added) is now real.
+
+**Selection, not checkboxes**: a song row in List's `SongTable` is itself the control —
+click to select (toggles a `.selected` class, styled as a slightly darker/grayer row,
+`client/index.css`'s `.songs-table tr.selected td`), click again to deselect. This was a
+deliberate correction mid-build (an initial checkbox-column design was explicitly
+rejected) — the row *is* the affordance, no separate UI element.
+
+**State lives in `App.jsx`, not the Playlist page**: `selectedSongs`, an object keyed by
+song id holding the full row object already on hand from List's fetch (no second
+API call needed to populate the Playlist tab). Persisted to `localStorage`
+(`playlister:selectedSongs`) so an accidental refresh doesn't lose it — survives tab
+switches and List filter/page changes within a session by construction, since it's lifted
+above both. The Playlist tab button shows a live `(n)` count.
+
+**Playlist page itself is intentionally minimal** — a second explicit correction
+mid-build (an initial version had an inline name field + public/private checkbox + button
+row baked into the page; rejected). Final shape:
+- Toolbar holds **only** the "Create Playlist" button, right-aligned via the existing
+  `.create-playlist-button { margin-left: auto }` rule — same placement as Events' "Run
+  Search" button, disabled when nothing's selected.
+- Below it, the selected songs as a plain table (Name/Artist(s)/Album/Year); clicking a
+  row here removes it (same click-to-toggle idiom as List, just one-directional).
+- Clicking Create Playlist opens a native `<dialog>` modal (`.playlist-modal`,
+  `showModal()`/`.close()` via a ref — no modal library) asking only for a title. No
+  public/private choice in the UI at all — playlists are created **always private**
+  (`isPublic: false` hardcoded in the request); a public/private toggle was proposed and
+  then explicitly dropped as unneeded complexity for a personal-use tool.
+
+**Backend**: `POST /api/playlists` (`routes/index.js`) → `controllers/playlists.js`'s
+`createPlaylistFromSongs()` → `sources/spotify.js`'s new `createPlaylist()` (real Spotify
+write, `POST /v1/users/{id}/playlists`) + `addTracksToPlaylist()` (`POST
+/v1/playlists/{id}/tracks`, chunked at Spotify's 100-track-per-request cap) → on success,
+written straight into the local `playlists`/`playlist_tracks` tables via a new
+`db/playlists.js` `create()` (single-playlist insert, extracted from `set()`'s per-row
+upsert logic) so the new playlist shows up immediately — `set()` itself is a
+whole-collection replace and would be needlessly expensive (re-reads and re-writes every
+other playlist's full track list) to reuse for adding just one. `routes/utils.js` gained
+`readJsonBody(req)` — the first route in this app that needs a POST body at all.
+
+**Scope change, real consequence**: `SCOPE` in `sources/spotify.js` now includes
+`playlist-modify-public playlist-modify-private`, needed for the write calls above. Every
+already-logged-in user's stored token predates this — **their first Create Playlist
+attempt will fail until they log out and back in** to re-consent. Confirmed as an
+accepted trade-off, not a bug to design around.
+
+**Not yet deployed** — built and verified locally only (lint + build clean); no droplet
+deploy or re-login-prompt handling done yet. No schema change needed (playlists/
+playlist_tracks already exist), so no migration required to deploy this one.
+
 ## Data files (all gitignored — never commit, never delete without an explicit ask)
 
 - `playlister.db` — the live SQLite database, the actual source of truth. See "Data
@@ -717,8 +775,6 @@ use the **union of all artists' genres** (genres are naturally multi-valued alre
   full natural range reports "not filtering" rather than "filtering to the full range" —
   important because an active min/max filter on a nullable field (like popularity) would
   otherwise silently exclude every song with no value for it.
-- "Create Playlist" button exists in the UI toolbar but is currently a **stub — does
-  nothing**. See Status below.
 - Table columns: Name, Artist(s), Album, Year, Added, Country, Genres.
 
 ## Known bugs found & fixed (don't reintroduce)
@@ -902,10 +958,15 @@ RSS feed, a WAL-mode file-copy corruption near-miss, knex's hanging-process trap
 are easy to silently reintroduce otherwise. Sympla was researched and confirmed
 scrapable but not yet built — the next natural source to add.
 
+**Done locally, not yet deployed — Playlist tab**: click-to-select songs in List, review/
+remove them in a new Playlist tab, name and create a real (always-private) Spotify
+playlist via a modal. Built and verified locally this session (lint + build clean, not
+yet run against a live server or Spotify by Lucas himself). Full detail: "Playlist tab"
+above — covers the click-to-select interaction, why the page ended up button-only, and
+the real consequence of the new OAuth write scopes (every existing user, Lucas included,
+needs to re-login before it'll work for them). Never deployed to the droplet.
+
 **Open / not started:**
-- "Create Playlist" is a no-op stub — needs `playlist-modify-private`/
-  `playlist-modify-public` OAuth scope + real Spotify write; now per-logged-in-user
-  rather than just Lucas's account.
 - ~300-350 of ~4500 artists have no resolvable country from any automated source —
   accepted as the practical ceiling. Going further would need a manual-override UI or
   manual per-artist research; not started.

@@ -7,4 +7,10 @@ const sendJson = (res, data) => {
   res.end(JSON.stringify(data));
 };
 
-module.exports = { getQueryParams, sendJson };
+const readJsonBody = async (req) => {
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  return body ? JSON.parse(body) : {};
+};
+
+module.exports = { getQueryParams, sendJson, readJsonBody };

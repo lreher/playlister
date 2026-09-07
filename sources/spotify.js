@@ -5,7 +5,8 @@ const users = require('../db/users');
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 const REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI;
-const SCOPE = 'user-library-read playlist-read-private playlist-read-collaborative';
+const SCOPE =
+  'user-library-read playlist-read-private playlist-read-collaborative playlist-modify-public playlist-modify-private';
 
 const getAuthorizeUrl = (state) => {
   const params = new URLSearchParams({
@@ -141,10 +142,57 @@ const getLikedSongsPage = async (accessToken, { limit, offset }) => {
   };
 };
 
+// Spotify caps a single add-tracks call at 100 URIs.
+const ADD_TRACKS_CHUNK_SIZE = 100;
+
+const createPlaylist = async (accessToken, spotifyUserId, { name, isPublic }) => {
+  const res = await fetch(`https://api.spotify.com/v1/users/${spotifyUserId}/playlists`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ name, public: isPublic }),
+  });
+  if (!res.ok) {
+    throw new Error(`Spotify create-playlist failed: ${res.status} ${await res.text()}`);
+  }
+  const data = await res.json();
+  return {
+    id: data.id,
+    name: data.name,
+    public: !!data.public,
+    ownerName: data.owner?.display_name ?? null,
+  };
+};
+
+// Chunked and posted sequentially so each chunk lands, in order, on top of the last.
+const addTracksToPlaylist = async (accessToken, playlistId, trackIds) => {
+  let snapshotId = null;
+  for (let i = 0; i < trackIds.length; i += ADD_TRACKS_CHUNK_SIZE) {
+    const chunk = trackIds.slice(i, i + ADD_TRACKS_CHUNK_SIZE);
+    const res = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ uris: chunk.map((id) => `spotify:track:${id}`) }),
+    });
+    if (!res.ok) {
+      throw new Error(`Spotify add-tracks failed: ${res.status} ${await res.text()}`);
+    }
+    snapshotId = (await res.json()).snapshot_id;
+  }
+  return snapshotId;
+};
+
 module.exports = {
   getAuthorizeUrl,
   exchangeCodeForTokens,
   refreshAccessToken,
   getValidAccessToken,
   getLikedSongsPage,
+  createPlaylist,
+  addTracksToPlaylist,
 };

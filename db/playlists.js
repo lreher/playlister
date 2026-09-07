@@ -39,6 +39,33 @@ const getById = async (userId, id, knexInstance = db) => {
   return rowToPlaylist(row, await tracksByPlaylistId(knexInstance, row.id));
 };
 
+const upsertOne = async (trx, userId, playlist) => {
+  const record = {
+    id: playlist.id,
+    user_id: userId,
+    name: playlist.name,
+    owner_name: playlist.ownerName,
+    public: playlist.public ? 1 : 0,
+    collaborative: playlist.collaborative ? 1 : 0,
+    snapshot_id: playlist.snapshotId,
+  };
+  await trx('playlists').insert(record).onConflict(['id', 'user_id']).merge(record);
+
+  await trx('playlist_tracks').where({ playlist_id: playlist.id }).del();
+  // Chunked: knex compiles a multi-row SQLite insert with onConflict as a UNION ALL
+  // of SELECTs, one term per row — SQLite's compound-SELECT limit (500) rejects a
+  // single call for any playlist (Liked Songs especially) past that many tracks.
+  for (let i = 0; i < playlist.tracks.length; i += TRACK_INSERT_CHUNK_SIZE) {
+    const chunk = playlist.tracks.slice(i, i + TRACK_INSERT_CHUNK_SIZE);
+    // A real Spotify playlist can contain the same track twice — ignore the conflict
+    // rather than crash on the (playlist_id, song_id) primary key.
+    await trx('playlist_tracks')
+      .insert(chunk.map((t) => ({ playlist_id: playlist.id, song_id: t.id, added_at: t.addedAt })))
+      .onConflict(['playlist_id', 'song_id'])
+      .ignore();
+  }
+};
+
 // Whole-collection replace, scoped to this user only — a shared playlist_id can belong
 // to another user's own playlists row too, so deletes never touch their ownership rows.
 const set = async (userId, playlists, knexInstance = db) => {
@@ -51,40 +78,22 @@ const set = async (userId, playlists, knexInstance = db) => {
         await trx('playlists').where({ user_id: userId, id }).del();
       }
     }
-
     for (const playlist of playlists) {
-      const record = {
-        id: playlist.id,
-        user_id: userId,
-        name: playlist.name,
-        owner_name: playlist.ownerName,
-        public: playlist.public ? 1 : 0,
-        collaborative: playlist.collaborative ? 1 : 0,
-        snapshot_id: playlist.snapshotId,
-      };
-      await trx('playlists').insert(record).onConflict(['id', 'user_id']).merge(record);
-
-      await trx('playlist_tracks').where({ playlist_id: playlist.id }).del();
-      // Chunked: knex compiles a multi-row SQLite insert with onConflict as a UNION ALL
-      // of SELECTs, one term per row — SQLite's compound-SELECT limit (500) rejects a
-      // single call for any playlist (Liked Songs especially) past that many tracks.
-      for (let i = 0; i < playlist.tracks.length; i += TRACK_INSERT_CHUNK_SIZE) {
-        const chunk = playlist.tracks.slice(i, i + TRACK_INSERT_CHUNK_SIZE);
-        // A real Spotify playlist can contain the same track twice — ignore the conflict
-        // rather than crash on the (playlist_id, song_id) primary key.
-        await trx('playlist_tracks')
-          .insert(chunk.map((t) => ({ playlist_id: playlist.id, song_id: t.id, added_at: t.addedAt })))
-          .onConflict(['playlist_id', 'song_id'])
-          .ignore();
-      }
+      await upsertOne(trx, userId, playlist);
     }
   });
   return playlists;
 };
 
+// Inserts/updates a single playlist without touching the user's other playlists —
+// unlike `set`, doesn't require (or re-write) the user's whole collection.
+const create = (userId, playlist, knexInstance = db) =>
+  knexInstance.transaction((trx) => upsertOne(trx, userId, playlist));
+
 module.exports = {
   getAll,
   getById,
   set,
+  create,
   likedSongsId,
 };

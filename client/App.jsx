@@ -3,11 +3,22 @@ import { EMPTY_FILTERS } from './pages/songList/Filters';
 import { SongList } from './pages/songList';
 import { Dashboards } from './pages/dashboards';
 import { Events } from './pages/events';
+import { Playlist } from './pages/playlist';
 import { getMe, getSyncStatus, getEnrichmentStatus, wipeDatabase, requestSync } from './api';
 import { THEMES, getTheme, setTheme } from './theme';
 
-const PATH_FOR_TAB = { list: '/', dashboards: '/dashboards', events: '/events' };
-const TAB_FOR_PATH = { '/': 'list', '/dashboards': 'dashboards', '/events': 'events' };
+const PATH_FOR_TAB = { list: '/', dashboards: '/dashboards', events: '/events', playlist: '/playlist' };
+const TAB_FOR_PATH = { '/': 'list', '/dashboards': 'dashboards', '/events': 'events', '/playlist': 'playlist' };
+
+const SELECTED_SONGS_STORAGE_KEY = 'playlister:selectedSongs';
+
+const loadStoredSelectedSongs = () => {
+  try {
+    return JSON.parse(localStorage.getItem(SELECTED_SONGS_STORAGE_KEY)) ?? {};
+  } catch {
+    return {};
+  }
+};
 
 const tabFromLocation = () => TAB_FOR_PATH[window.location.pathname] ?? 'list';
 
@@ -59,6 +70,13 @@ export const App = () => {
   const [dataVersion, setDataVersion] = useState(0);
   // Mirrors the theme index.jsx already applied before first paint into render state.
   const [theme, setThemeState] = useState(getTheme);
+  // Songs picked in List for the Playlist tab, keyed by id — persisted so an accidental
+  // refresh doesn't lose the selection.
+  const [selectedSongs, setSelectedSongs] = useState(loadStoredSelectedSongs);
+
+  useEffect(() => {
+    localStorage.setItem(SELECTED_SONGS_STORAGE_KEY, JSON.stringify(selectedSongs));
+  }, [selectedSongs]);
 
   // Decides whether to show the app shell, a first-sync screen, or bounce to login.
   useEffect(() => {
@@ -286,6 +304,26 @@ export const App = () => {
     });
   };
 
+  const toggleSongSelected = (song) => {
+    setSelectedSongs((prev) => {
+      const next = { ...prev };
+      if (next[song.id]) {
+        delete next[song.id];
+      } else {
+        next[song.id] = song;
+      }
+      return next;
+    });
+  };
+
+  const removeSelectedSong = (id) => {
+    setSelectedSongs((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
   const switchTab = (next) => {
     setTab(next);
     if (next === 'dashboards') setDashboardsVisited(true);
@@ -331,6 +369,9 @@ export const App = () => {
         <button className={`tab-button ${tab === 'list' ? 'active' : ''}`} onClick={() => switchTab('list')}>
           List
         </button>
+        <button className={`tab-button ${tab === 'playlist' ? 'active' : ''}`} onClick={() => switchTab('playlist')}>
+          Playlist{Object.keys(selectedSongs).length > 0 ? ` (${Object.keys(selectedSongs).length})` : ''}
+        </button>
         <button
           className={`tab-button ${tab === 'dashboards' ? 'active' : ''}`}
           onClick={() => switchTab('dashboards')}
@@ -363,6 +404,8 @@ export const App = () => {
           onReset={() => setFilters(EMPTY_FILTERS)}
           dataVersion={dataVersion}
           controls={renderLibraryControls()}
+          selectedIds={new Set(Object.keys(selectedSongs))}
+          onToggleSong={toggleSongSelected}
         />
       </div>
 
@@ -374,6 +417,17 @@ export const App = () => {
 
       <div style={{ display: tab === 'events' ? '' : 'none' }}>
         <Events />
+      </div>
+
+      <div style={{ display: tab === 'playlist' ? '' : 'none' }}>
+        <Playlist
+          songs={Object.values(selectedSongs)}
+          onRemove={removeSelectedSong}
+          onCreated={() => {
+            setSelectedSongs({});
+            setDataVersion((v) => v + 1);
+          }}
+        />
       </div>
     </>
   );

@@ -3,11 +3,17 @@
 import { Filters } from './Filters';
 import { SongTable } from './SongTable';
 
-export const SongList = ({ filters, onChange, onReset, dataVersion, controls }) => <>
+export const SongList = ({ filters, onChange, onReset, dataVersion, controls, selectedIds, onToggleSong }) => <>
       <div id="filters">
         <Filters filters={filters} onChange={onChange} onReset={onReset} dataVersion={dataVersion} />
       </div>
       <div id="app">
-        <SongTable filters={filters} dataVersion={dataVersion} controls={controls} />
+        <SongTable
+          filters={filters}
+          dataVersion={dataVersion}
+          controls={controls}
+          selectedIds={selectedIds}
+          onToggleSong={onToggleSong}
+        />
       </div>
     </>;

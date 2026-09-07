@@ -244,6 +244,7 @@
 
 :root[data-theme='clean'] #app,
 :root[data-theme='clean'] #events,
+:root[data-theme='clean'] #playlist,
 :root[data-theme='clean'] #filters,
 :root[data-theme='clean'] .card {
   background: rgba(255, 255, 255, 0.15);
@@ -263,7 +264,8 @@
    Solid instead of blurred here; the smaller, mostly-static filters cards
    below keep the frosted-glass blur since they don't pay that cost. */
 :root[data-theme='clean'] #app,
-:root[data-theme='clean'] #events {
+:root[data-theme='clean'] #events,
+:root[data-theme='clean'] #playlist {
   background: rgba(255, 255, 255, 0.55);
 }
 
@@ -337,7 +339,8 @@ h1 {
 }
 
 #app,
-#events {
+#events,
+#playlist {
   max-width: 1400px;
   margin: 0 auto;
   background: var(--panel-bg);
@@ -433,6 +436,37 @@ h1 {
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.playlist-modal {
+  background: var(--panel-bg);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  min-width: 320px;
+}
+
+.playlist-modal::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.playlist-modal h2 {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+  color: var(--heading-color);
+  font-weight: var(--heading-weight);
+}
+
+.playlist-modal .filter-search-input {
+  width: 100%;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
 }
 
 /* Three tracks: empty spacer | centered pagination | right-aligned
@@ -804,6 +838,14 @@ h1 {
 
 .data-table tr:hover td {
   background: var(--row-hover);
+}
+
+.songs-table tbody tr {
+  cursor: pointer;
+}
+
+.songs-table tr.selected td {
+  background: rgba(0, 0, 0, 0.12);
 }
 
 /* Year/Added/Country - Songs-specific column emphasis, not part of the generic table look. */
