@@ -568,9 +568,69 @@ already-logged-in user's stored token predates this — **their first Create Pla
 attempt will fail until they log out and back in** to re-consent. Confirmed as an
 accepted trade-off, not a bug to design around.
 
-**Not yet deployed** — built and verified locally only (lint + build clean); no droplet
-deploy or re-login-prompt handling done yet. No schema change needed (playlists/
-playlist_tracks already exist), so no migration required to deploy this one.
+**Deployed Sep 7 2026** — no schema change was needed (playlists/playlist_tracks already
+existed), so no migration ran for this one specifically. Existing users still need to
+re-login once to pick up the new write scopes (see above) — not yet confirmed against a
+real user's re-login on the droplet, just the code-level trade-off.
+
+**Undo/Clear (Sep 7 2026)**: a toolbar in the same left-hand spot List's Previous/Next
+occupy — `Undo` (restores the most recently removed song(s)) and `Clear` (empties the
+whole selection in one action, itself undoable). Both are driven by one `undoStack` in
+`App.jsx`: an array of *batches*, oldest first, where a single-row removal is a one-song
+batch and Clear is a whole-selection batch — Undo always pops and restores one whole
+batch, so undoing a Clear brings everything back in one click, not one song at a time.
+Each batch entry is `{ song, index }` — the song's position (via `Object.entries` order)
+at the moment it was removed — and Undo splices each one back into that exact index
+(clamped to the current length), not just onto the top or bottom. Verified directly with
+a Node script simulating both the single-removal and whole-Clear cases against the
+splice logic, not just read through. Not persisted to `localStorage` (unlike the
+selection itself) — a session-only safety net, deliberately cleared once a playlist is
+actually created, since a fresh selection afterward shouldn't be able to resurrect old
+removals.
+
+## List tab: bulk selection, drag-select, and multi-genre search (Sep 7 2026)
+
+- **Select All** — toolbar button next to Previous/Next/status, selects every song on the
+  current page (explicitly scoped to the page, not every filtered result across pages —
+  Lucas's call when asked, to avoid a surprise multi-thousand-song selection). Shows a
+  "pressed" state (`.select-all-button.active`: darker fill + inset shadow) while every
+  row on the page is already selected, and clicking again in that state deselects the
+  page instead of re-selecting it.
+- **Drag-select** — `mousedown` on a row starts a drag; whether that starting row was
+  already selected decides if the drag selects or deselects as the mouse moves over other
+  rows (spreadsheet-style click-drag). Ends on `mouseup` anywhere in the window, not just
+  over the table, since a drag can end past its edge.
+- **Genres hover-to-copy** — a truncated Genres cell pops its full text out on hover
+  (`.genres-cell:hover span`, right-anchored so it stays inside the table's width instead
+  of triggering horizontal scroll) as real selectable/copyable DOM text, not a native
+  `title` tooltip (which can't be selected with the mouse). Its `onMouseDown` calls
+  `stopPropagation()` so trying to drag-select the genre text doesn't also trigger the
+  row's own drag-select handler.
+- **Both single-song selection and drag-select now go through one bulk callback**,
+  `onSelectSongs(songs, selected)` in `App.jsx` — replaced the old single-song
+  `onToggleSong`, so a 50-row drag or Select All is one state update, not fifty.
+- **Genre filter is now multi-select**, using the same `OptionsSearch` free-text/datalist
+  component Artist already used (type to search, matches become removable chips;
+  already-selected genres drop out of the suggestions). Selected genres are OR'd together
+  server-side (`controllers/songs.js`'s `buildFilteredQuery`, `whereIn('ag.genre',
+  genres)` instead of a single `andWhere` equality) — a song matches if it has *any* of
+  the selected genres, confirmed by Lucas as the wanted semantics. Sent over HTTP as
+  repeated `genres=` query params (`client/api.js`), read back via `params.getAll('genres')`
+  (`routes/index.js`).
+  - **Known gap surfaced by this, not yet resolved**: genre matching is exact-string, not
+    substring — and Spotify's genre tags are already fully separate strings per
+    subgenre/locale, not a hierarchy. Real example that caught this: Fishmans (country
+    `JP`) has genres `dream pop`, `j-rock`, `japanese indie`, `neo-psychedelic`,
+    `shibuya-kei` — selecting the `indie` chip does **not** match `japanese indie`
+    (confirmed directly against the real local library: 20 distinct `*indie*` genre
+    strings exist, e.g. `indie pop`, `german indie`, `japanese indie`, all separate).
+    Lucas ran into this expecting Fishmans to show under a Japan-country + indie-genre
+    filter. Asked whether genre matching should become substring-based (so `indie` would
+    catch `japanese indie`, `indie rock`, etc., at the cost of being broader than the
+    chip literally says) or stay exact-match (more precise, but requires adding every
+    genre-family variant as its own chip) — **not yet answered, conversation moved on to
+    an unrelated bug (Dashboards loading layout) before circling back.** Pick this back up
+    before doing more genre-filter work.
 
 ## Data files (all gitignored — never commit, never delete without an explicit ask)
 
@@ -929,7 +989,7 @@ exited with code 0 (`== Enrichment complete ==` / `== Sync complete ==`). His so
   (between step 3 and their own re-sync) would have seen a blank library — not
   something to fix in data, just be aware if asked about it.
 
-## Status / open items (as of Sep 5 2026)
+## Status / open items (as of Sep 7 2026)
 
 **Done and deployed:**
 - Multi-tenancy — real per-user sessions, per-user "Added" dates, conditional login sync
@@ -939,6 +999,22 @@ exited with code 0 (`== Enrichment complete ==` / `== Sync complete ==`). His so
 - ESLint added (no preset rules, arrow-functions-only + no-var/eqeqeq/no-unused-vars),
   whole codebase converted to comply, and a codebase-wide comment-trim pass — see
   "Linting" and "Comment style" above. Commit `91480ce`.
+- **Events tab** — São Paulo/Rio/BH concert discovery (Polvo Manco + Ao Vivo sources).
+  Deployed Sep 7 2026 (commit `6425ff2`'s deploy). **Surprising find while deploying**:
+  `npm run migrate` reported "Already up to date" for the `events`/`event_artists`
+  tables — meaning they'd already been applied to the droplet at some earlier point not
+  reflected in this doc's prior text (which said "never deployed" as of Sep 5-6). Not
+  investigated further (not urgent — a no-op migration is harmless either way), but worth
+  knowing the "never deployed" claim below was stale before today, in case that matters
+  for reasoning about droplet state elsewhere.
+- **Playlist tab** — click-to-select in List, review/remove/Undo/Clear in a new Playlist
+  tab, real (always-private) Spotify playlist creation via a modal. Deployed Sep 7 2026.
+  Existing users (everyone but a freshly-logging-in one) still need to re-login once to
+  pick up the new write scopes before Create Playlist works for them — not yet confirmed
+  against a real user hitting this on the droplet.
+- **List tab: Select All, drag-select, multi-genre filter, genre hover-to-copy** (Sep 7
+  2026) — see "List tab: bulk selection, drag-select, and multi-genre search" above for
+  full detail, including the still-open genre exact-match-vs-substring question.
 
 **In progress — droplet migration**: the knex query-layer rewrite is deployed to the
 droplet, schema migrated, service back up, Lucas's own data fully re-synced and
@@ -947,31 +1023,22 @@ to repopulate their songs/playlists under the new schema. Full detail, exact com
 and user-id list to resume with: **"Droplet migration (Sep 5 2026)" under Deployment,
 above** — read that before doing anything else here.
 
-**Done locally, not yet deployed — Events tab**: real São Paulo/Rio de Janeiro/Belo
-Horizonte concert discovery matched against your own library (Polvo Manco + Ao Vivo
-sources), with a live-updating "Run Search" button. Built and verified entirely locally
-this session, per Lucas's explicit "only do this locally first" instruction — **never
-deployed to the droplet, no production migration run for the new `events`/`event_artists`
-tables yet**. Full detail: "Events tab" above, read it before touching this again — it
-covers real gotchas (the spreadsheet's 25-tab-per-state structure, Ao Vivo's truncated
-RSS feed, a WAL-mode file-copy corruption near-miss, knex's hanging-process trap) that
-are easy to silently reintroduce otherwise. Sympla was researched and confirmed
-scrapable but not yet built — the next natural source to add.
-
-**Done locally, not yet deployed — Playlist tab**: click-to-select songs in List, review/
-remove them in a new Playlist tab, name and create a real (always-private) Spotify
-playlist via a modal. Built and verified locally this session (lint + build clean, not
-yet run against a live server or Spotify by Lucas himself). Full detail: "Playlist tab"
-above — covers the click-to-select interaction, why the page ended up button-only, and
-the real consequence of the new OAuth write scopes (every existing user, Lucas included,
-needs to re-login before it'll work for them). Never deployed to the droplet.
-
 **Open / not started:**
+- **Genre matching: exact-string vs. substring — asked, not yet answered.** Selecting the
+  `indie` genre chip doesn't match `japanese indie` (a separate exact tag, not a
+  substring relationship) — surfaced via a real Fishmans example. Lucas was asked
+  whether genre filtering should become substring-based instead of exact-match; the
+  conversation moved to an unrelated bug (Dashboards loading layout) before answering.
+  Pick this back up before doing more genre-filter work — see "List tab" above for the
+  full writeup and the concrete data behind it.
 - ~300-350 of ~4500 artists have no resolvable country from any automated source —
   accepted as the practical ceiling. Going further would need a manual-override UI or
   manual per-artist research; not started.
 - Static assets (`routes/static.js`) still send no `Cache-Control` header — browsers can
-  cache a stale bundle after a deploy even after Cloudflare's own cache is purged.
+  cache a stale bundle after a deploy even after Cloudflare's own cache is purged. This
+  bit for real this session: a genre-filter fix looked broken in the browser purely from
+  a stale cached `bundle.js`, resolved by a hard refresh — see the "Verification" note
+  added to musings.md.
 - The stray `artist-countries copy.json` file's origin is unexplained.
 - The Delete button wipes the entire database (every user's data) and isn't gated to one
   admin — Lucas's explicit, knowing call ("yes I understand how dumb that sounds").
