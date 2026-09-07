@@ -14,7 +14,7 @@ export const Dashboards = ({ onFilterClick }) => {
     getStats().then(setStats);
   }, []);
 
-  if (!stats) return <div>Loading...</div>;
+  if (!stats) return <div id="dashboards"><p className="table-message">Loading…</p></div>;
 
   return (
     <div id="dashboards">

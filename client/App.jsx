@@ -42,11 +42,11 @@ const syncProgressLabel = (progress) => {
   return pct !== null ? `${phase} — ${progress.current}/${progress.total} (${pct}%)` : phase;
 };
 
-// Undo tooltip text for a batch (a single removed row, or a whole Clear) — undefined
-// when there's nothing to undo, so the button falls back to no title at all.
+// Undo tooltip text for a batch (array of { song, index }) — a single removed row, or a
+// whole Clear. Undefined when there's nothing to undo, so the button gets no title at all.
 const undoBatchTitle = (batch) => {
   if (!batch) return undefined;
-  return batch.length === 1 ? `Restore ${batch[0].name}` : `Restore ${batch.length} songs`;
+  return batch.length === 1 ? `Restore ${batch[0].song.name}` : `Restore ${batch.length} songs`;
 };
 
 // Shows which resolution step is running, since resolved/total plateaus below 100% forever
@@ -330,10 +330,13 @@ export const App = () => {
     });
   };
 
+  // Records each removed song's position (within the current display order) so Undo can
+  // put it back exactly where it was, not just at the top or bottom.
   const removeSelectedSong = (id) => {
-    const song = selectedSongs[id];
-    if (!song) return;
-    setUndoStack((stack) => [...stack, [song]]);
+    const entries = Object.entries(selectedSongs);
+    const index = entries.findIndex(([songId]) => songId === id);
+    if (index === -1) return;
+    setUndoStack((stack) => [...stack, [{ song: selectedSongs[id], index }]]);
     setSelectedSongs((prev) => {
       const next = { ...prev };
       delete next[id];
@@ -341,25 +344,27 @@ export const App = () => {
     });
   };
 
-  // Whole-selection removal, undoable as a single batch just like one row's removal.
+  // Whole-selection removal, undoable as a single batch just like one row's removal —
+  // each song keeps its original index (0, 1, 2, ...) for Undo to restore it by.
   const clearSelection = () => {
-    const songs = Object.values(selectedSongs);
-    if (songs.length === 0) return;
-    setUndoStack((stack) => [...stack, songs]);
+    const entries = Object.entries(selectedSongs);
+    if (entries.length === 0) return;
+    setUndoStack((stack) => [...stack, entries.map(([, song], index) => ({ song, index }))]);
     setSelectedSongs({});
   };
 
-  // Pops the most recently removed batch back into the selection. Restored first in the
-  // object so it renders at the top of the Playlist table, not buried at the bottom where
-  // a fresh key would otherwise land; the batch's own order is preserved within that.
+  // Pops the most recently removed batch back into the selection, splicing each song back
+  // in at its recorded index (clamped, in case the list is shorter now than it was).
   const undoRemove = () => {
     if (undoStack.length === 0) return;
     const batch = undoStack[undoStack.length - 1];
     setUndoStack((stack) => stack.slice(0, -1));
     setSelectedSongs((prev) => {
-      const restored = {};
-      for (const song of batch) restored[song.id] = song;
-      return { ...restored, ...prev };
+      const entries = Object.entries(prev);
+      for (const { song, index } of batch) {
+        entries.splice(Math.min(index, entries.length), 0, [song.id, song]);
+      }
+      return Object.fromEntries(entries);
     });
   };
 
