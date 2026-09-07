@@ -22,7 +22,7 @@ const userAddedAtSubquery = (knexInstance, userId) => knexInstance('playlist_tra
 const buildFilteredQuery = (
   knexInstance,
   {
-    genre,
+    genres,
     year,
     decade,
     country,
@@ -45,13 +45,14 @@ const buildFilteredQuery = (
     .leftJoin('artists as primary_artist', 'primary_artist.id', 'primary_sa.artist_id')
     .whereExists(visibleToUser(knexInstance, userId));
 
-  if (genre) {
+  // OR across selected genres: a song matches if any of its (union-of-artists) genres is selected.
+  if (genres && genres.length > 0) {
     query.whereExists(
       knexInstance('song_artists as sa')
         .select(1)
         .join('artist_genres as ag', 'ag.artist_id', 'sa.artist_id')
         .where('sa.song_id', knexInstance.ref('songs.id'))
-        .andWhere('ag.genre', genre)
+        .whereIn('ag.genre', genres)
     );
   }
   if (year) query.andWhere('songs.year', year);

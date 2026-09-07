@@ -41,11 +41,16 @@ export const getFilters = () => fetchJson('/api/filters');
 
 export const getStats = () => fetchJson('/api/stats');
 
-// Only non-empty/non-null filter values get sent as query params.
+// Only non-empty/non-null filter values get sent as query params. `genres` is the one
+// multi-valued filter — sent as repeated `genres=` params, read back via `getAll`.
 export const getSongs = ({ limit, offset, filters }) => {
   const params = new URLSearchParams({ limit, offset });
   for (const [key, value] of Object.entries(filters)) {
-    if (value !== '' && value !== null) params.set(key, value);
+    if (key === 'genres') {
+      for (const genre of value) params.append('genres', genre);
+    } else if (value !== '' && value !== null) {
+      params.set(key, value);
+    }
   }
   return fetchJson(`/api/songs?${params.toString()}`);
 };

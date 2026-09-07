@@ -130,7 +130,7 @@ router.on(
           userId,
           limit: Math.min(Number(params.get('limit')) || 50, 50),
           offset: Number(params.get('offset')) || 0,
-          genre: params.get('genre'),
+          genres: params.getAll('genres'),
           year: params.get('year'),
           decade: params.get('decade'),
           country: params.get('country'),

@@ -7,10 +7,13 @@ import { Pagination } from '../../../components/Pagination';
 const LIMIT = 50;
 const COLUMNS = ['Name', 'Artist(s)', 'Album', 'Year', 'Added', 'Country', 'Genres'];
 
-export const SongTable = ({ filters, dataVersion, controls, selectedIds, onToggleSong }) => {
+export const SongTable = ({ filters, dataVersion, controls, selectedIds, onSelectSongs }) => {
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState(null);
   const [error, setError] = useState(null);
+  // Set the moment a row's mouse goes down, cleared on mouseup anywhere — drives whether
+  // dragging over other rows selects or deselects them, and whether to suppress text selection.
+  const [dragMode, setDragMode] = useState(null);
 
   // A filter change resets to page one; runs before the fetch effect on the same render.
   useEffect(() => {
@@ -29,9 +32,35 @@ export const SongTable = ({ filters, dataVersion, controls, selectedIds, onToggl
     };
   }, [filters, offset, dataVersion]);
 
+  // mouseup can land outside the table (drag past its edge) — a window listener still catches it.
+  useEffect(() => {
+    if (!dragMode) return;
+    const stopDragging = () => setDragMode(null);
+    window.addEventListener('mouseup', stopDragging);
+    return () => window.removeEventListener('mouseup', stopDragging);
+  }, [dragMode]);
+
+  // Starting row decides the drag's mode: dragging off a selected row deselects, off an
+  // unselected row selects — same as a spreadsheet's click-drag selection.
+  const handleRowMouseDown = (song, event) => {
+    event.preventDefault();
+    const mode = selectedIds.has(song.id) ? 'deselect' : 'select';
+    setDragMode(mode);
+    onSelectSongs([song], mode === 'select');
+  };
+
+  const handleRowMouseEnter = (song) => {
+    if (!dragMode) return;
+    onSelectSongs([song], dragMode === 'select');
+  };
+
   // Toolbar stays mounted through loading/error; only the table body + pagination need a loaded page.
   const from = page && (page.total === 0 ? 0 : page.offset + 1);
   const to = page && Math.min(page.offset + page.items.length, page.total);
+
+  // Drives the button's pressed look and lets a second click deselect the page instead of
+  // re-selecting an already-fully-selected one.
+  const allPageSelected = !!page && page.items.length > 0 && page.items.every((song) => selectedIds.has(song.id));
 
   return (
     <>
@@ -53,12 +82,19 @@ export const SongTable = ({ filters, dataVersion, controls, selectedIds, onToggl
         <p className="status">
           {error ? 'Could not load songs' : page ? `${from}-${to} of ${page.total}` : 'Loading…'}
         </p>
+        <button
+          className={`page-button filled select-all-button ${allPageSelected ? 'active' : ''}`}
+          disabled={!page || page.items.length === 0}
+          onClick={() => page && onSelectSongs(page.items, !allPageSelected)}
+        >
+          Select All
+        </button>
       </div>
       {error && <div className="table-message">Error: {error}</div>}
       {!error && !page && <div className="table-message">Loading…</div>}
       {page && (
         <div className="data-table-wrap">
-          <table className="data-table songs-table">
+          <table className={`data-table songs-table ${dragMode ? 'dragging' : ''}`}>
             <tr>
               {COLUMNS.map((label) => (
                 <th key={label}>{label}</th>
@@ -68,7 +104,8 @@ export const SongTable = ({ filters, dataVersion, controls, selectedIds, onToggl
               <tr
                 key={song.id}
                 className={selectedIds.has(song.id) ? 'selected' : ''}
-                onClick={() => onToggleSong(song)}
+                onMouseDown={(event) => handleRowMouseDown(song, event)}
+                onMouseEnter={() => handleRowMouseEnter(song)}
               >
                 <td>{song.name}</td>
                 <td>{song.artists}</td>
@@ -76,7 +113,9 @@ export const SongTable = ({ filters, dataVersion, controls, selectedIds, onToggl
                 <td>{song.year ?? '—'}</td>
                 <td>{new Date(song.addedAt).toLocaleDateString()}</td>
                 <td>{countryLabel(song.country)}</td>
-                <td>{song.genres.length ? song.genres.join(', ') : '—'}</td>
+                <td className="genres-cell" onMouseDown={(event) => event.stopPropagation()}>
+                  <span>{song.genres.length ? song.genres.join(', ') : '—'}</span>
+                </td>
               </tr>
             ))}
           </table>

@@ -8,7 +8,7 @@ import { OptionsSearch } from '../../../components/filters/OptionsSearch';
 import { RangeSlider } from '../../../components/filters/RangeSlider';
 
 export const EMPTY_FILTERS = {
-  genre: '',
+  genres: [],
   year: '',
   decade: '',
   country: '',
@@ -27,6 +27,9 @@ export const Filters = ({ filters, onChange, onReset, dataVersion }) => {
   const [options, setOptions] = useState(null);
   // Bumped on reset to remount the uncontrolled primitives back to their defaults.
   const [resetToken, setResetToken] = useState(0);
+  // Bumped after each genre added, to remount just the genre search input and clear it
+  // for the next one — same uncontrolled-remount trick reset uses, scoped to one input.
+  const [genreInputToken, setGenreInputToken] = useState(0);
 
   // Re-fetches when a sync finishes so option lists/ranges reflect the updated library.
   useEffect(() => {
@@ -36,6 +39,14 @@ export const Filters = ({ filters, onChange, onReset, dataVersion }) => {
   const set = (key) => (value) => onChange({ ...filters, [key]: value });
 
   const setRange = (minKey, maxKey) => (lo, hi) => onChange({ ...filters, [minKey]: lo, [maxKey]: hi });
+
+  const addGenre = (genre) => {
+    if (!genre || filters.genres.includes(genre)) return;
+    onChange({ ...filters, genres: [...filters.genres, genre] });
+    setGenreInputToken((t) => t + 1);
+  };
+
+  const removeGenre = (genre) => onChange({ ...filters, genres: filters.genres.filter((g) => g !== genre) });
 
   const handleReset = () => {
     onReset();
@@ -60,7 +71,23 @@ export const Filters = ({ filters, onChange, onReset, dataVersion }) => {
   return (
     <>
       <div className="filter-row">
-        <OptionsSelect value={filters.genre} onChange={set('genre')} allLabel="All genres" options={genres} />
+        <div className="genre-filter">
+          <OptionsSearch
+            options={genres.filter((g) => !filters.genres.includes(g))}
+            placeholder="Add genre"
+            onChange={addGenre}
+            resetKey={`genre-${resetToken}-${genreInputToken}`}
+          />
+          {filters.genres.length > 0 && (
+            <div className="genre-chips">
+              {filters.genres.map((g) => (
+                <button key={g} className="genre-chip" onClick={() => removeGenre(g)} title={`Remove ${g}`}>
+                  {g} ×
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <OptionsSelect value={filters.year} onChange={set('year')} allLabel="All years" options={years} />
         <OptionsSelect value={filters.decade} onChange={set('decade')} allLabel="All decades" options={decades} />
         <OptionsSelect

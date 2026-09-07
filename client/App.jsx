@@ -73,6 +73,9 @@ export const App = () => {
   // Songs picked in List for the Playlist tab, keyed by id — persisted so an accidental
   // refresh doesn't lose the selection.
   const [selectedSongs, setSelectedSongs] = useState(loadStoredSelectedSongs);
+  // Songs removed from the Playlist tab, oldest first — not persisted, just a session
+  // convenience for undoing a run of accidental removals.
+  const [undoStack, setUndoStack] = useState([]);
 
   useEffect(() => {
     localStorage.setItem(SELECTED_SONGS_STORAGE_KEY, JSON.stringify(selectedSongs));
@@ -304,24 +307,40 @@ export const App = () => {
     });
   };
 
-  const toggleSongSelected = (song) => {
+  // Bulk so a drag or "Select All" over many rows is one state update, not one per row.
+  const selectSongs = (songs, selected) => {
     setSelectedSongs((prev) => {
       const next = { ...prev };
-      if (next[song.id]) {
-        delete next[song.id];
-      } else {
-        next[song.id] = song;
+      for (const song of songs) {
+        if (selected) {
+          next[song.id] = song;
+        } else {
+          delete next[song.id];
+        }
       }
       return next;
     });
   };
 
   const removeSelectedSong = (id) => {
+    const song = selectedSongs[id];
+    if (!song) return;
+    setUndoStack((stack) => [...stack, song]);
     setSelectedSongs((prev) => {
       const next = { ...prev };
       delete next[id];
       return next;
     });
+  };
+
+  // Pops the most recently removed song back into the selection, one at a time. Restored
+  // first in the object so it renders at the top of the Playlist table, not buried at the
+  // bottom where a fresh key would otherwise land.
+  const undoRemove = () => {
+    if (undoStack.length === 0) return;
+    const song = undoStack[undoStack.length - 1];
+    setUndoStack((stack) => stack.slice(0, -1));
+    setSelectedSongs((prev) => ({ [song.id]: song, ...prev }));
   };
 
   const switchTab = (next) => {
@@ -405,7 +424,7 @@ export const App = () => {
           dataVersion={dataVersion}
           controls={renderLibraryControls()}
           selectedIds={new Set(Object.keys(selectedSongs))}
-          onToggleSong={toggleSongSelected}
+          onSelectSongs={selectSongs}
         />
       </div>
 
@@ -423,8 +442,12 @@ export const App = () => {
         <Playlist
           songs={Object.values(selectedSongs)}
           onRemove={removeSelectedSong}
+          canUndo={undoStack.length > 0}
+          lastRemoved={undoStack[undoStack.length - 1]}
+          onUndo={undoRemove}
           onCreated={() => {
             setSelectedSongs({});
+            setUndoStack([]);
             setDataVersion((v) => v + 1);
           }}
         />

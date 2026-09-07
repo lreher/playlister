@@ -3,7 +3,7 @@
 import { Filters } from './Filters';
 import { SongTable } from './SongTable';
 
-export const SongList = ({ filters, onChange, onReset, dataVersion, controls, selectedIds, onToggleSong }) => <>
+export const SongList = ({ filters, onChange, onReset, dataVersion, controls, selectedIds, onSelectSongs }) => <>
       <div id="filters">
         <Filters filters={filters} onChange={onChange} onReset={onReset} dataVersion={dataVersion} />
       </div>
@@ -13,7 +13,7 @@ export const SongList = ({ filters, onChange, onReset, dataVersion, controls, se
           dataVersion={dataVersion}
           controls={controls}
           selectedIds={selectedIds}
-          onToggleSong={onToggleSong}
+          onSelectSongs={onSelectSongs}
         />
       </div>
     </>;
