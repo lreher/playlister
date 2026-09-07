@@ -4,7 +4,7 @@ import { createPlaylist } from '../../api';
 
 const COLUMNS = ['Name', 'Artist(s)', 'Album', 'Year'];
 
-export const Playlist = ({ songs, onRemove, canUndo, lastRemoved, onUndo, onCreated }) => {
+export const Playlist = ({ songs, onRemove, onClear, canUndo, undoTitle, onUndo, onCreated }) => {
   const dialogRef = useRef(null);
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
@@ -35,13 +35,11 @@ export const Playlist = ({ songs, onRemove, canUndo, lastRemoved, onUndo, onCrea
   return (
     <div id="playlist">
       <div className="toolbar">
-        <button
-          className="page-button"
-          disabled={!canUndo}
-          onClick={onUndo}
-          title={lastRemoved ? `Restore ${lastRemoved.name}` : undefined}
-        >
+        <button className="page-button" disabled={!canUndo} onClick={onUndo} title={undoTitle}>
           Undo
+        </button>
+        <button className="page-button" disabled={songs.length === 0} onClick={onClear}>
+          Clear
         </button>
         <button
           className="page-button filled create-playlist-button"
