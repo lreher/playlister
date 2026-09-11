@@ -1,19 +1,27 @@
 const db = require('./index')();
 const isrcCountry = require('../utils/isrcCountry');
 
+// SQLite has a hard cap on bound parameters per query ("too many SQL variables") —
+// getAll() feeds this the whole (global, cross-user) songs table, easily past it.
+const SONG_ID_CHUNK_SIZE = 400;
+
 // One batched query for a set of songs' full artist lists instead of one query per song.
 const artistsBySongId = async (knexInstance, songIds) => {
   if (songIds.length === 0) return new Map();
-  const rows = await knexInstance('song_artists')
-    .join('artists', 'artists.id', 'song_artists.artist_id')
-    .whereIn('song_artists.song_id', songIds)
-    .orderBy('song_artists.position')
-    .select({ songId: 'song_artists.song_id', id: 'artists.id', name: 'artists.name' });
 
   const map = new Map();
-  for (const row of rows) {
-    if (!map.has(row.songId)) map.set(row.songId, []);
-    map.get(row.songId).push({ id: row.id, name: row.name });
+  for (let i = 0; i < songIds.length; i += SONG_ID_CHUNK_SIZE) {
+    const chunk = songIds.slice(i, i + SONG_ID_CHUNK_SIZE);
+    const rows = await knexInstance('song_artists')
+      .join('artists', 'artists.id', 'song_artists.artist_id')
+      .whereIn('song_artists.song_id', chunk)
+      .orderBy('song_artists.position')
+      .select({ songId: 'song_artists.song_id', id: 'artists.id', name: 'artists.name' });
+
+    for (const row of rows) {
+      if (!map.has(row.songId)) map.set(row.songId, []);
+      map.get(row.songId).push({ id: row.id, name: row.name });
+    }
   }
   return map;
 };
