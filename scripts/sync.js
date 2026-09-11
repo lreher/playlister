@@ -20,6 +20,7 @@ const WIKIDATA_FUZZY_DELAY_MS = 1000;
 const WIKIDATA_QID_BATCH_SIZE = 50;
 const GENRE_BATCH_SIZE = 50;
 const GENRE_REQUEST_DELAY_MS = 250;
+const ISRC_FALLBACK_BATCH_SIZE = 500;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -345,19 +346,40 @@ const resolveCountries = async (artistList, knexInstance = syncDb) => {
 };
 
 // Local-only fallback: checks stored track ISRCs for any artist still missing a country.
+// Queries only (artist, isrc) pairs for primary artists still missing a country, in small
+// batches, instead of songsDb.getAll() — that loaded the whole global songs+artists table
+// into memory at once, which OOM'd this app's small (458MB) droplet.
 const resolveIsrcFallback = async (knexInstance = syncDb) => {
   let recovered = 0;
 
-  for (const song of await songsDb.getAll(knexInstance)) {
-    const primary = song.artists[0];
-    const entry = primary && (await artistsDb.getById(primary.id, knexInstance));
-    if (entry && entry.country === null) {
-      const country = isrcCountry.countryFromIsrc(song.isrc);
+  for (;;) {
+    const rows = await knexInstance('song_artists as sa')
+      .join('artists as a', 'a.id', 'sa.artist_id')
+      .join('songs as s', 's.id', 'sa.song_id')
+      .where('sa.position', 0)
+      .whereNull('a.country')
+      .select({ artistId: 'a.id', isrc: 's.isrc' })
+      .limit(ISRC_FALLBACK_BATCH_SIZE);
+
+    if (rows.length === 0) break;
+
+    const seen = new Set();
+    let recoveredThisBatch = 0;
+    for (const { artistId, isrc } of rows) {
+      if (seen.has(artistId)) continue; // same artist can appear via more than one song in a batch
+      seen.add(artistId);
+      const country = isrcCountry.countryFromIsrc(isrc);
       if (country) {
-        await artistsDb.upsert(primary.id, { country, countrySource: 'isrc' }, knexInstance);
+        await artistsDb.upsert(artistId, { country, countrySource: 'isrc' }, knexInstance);
         recovered++;
+        recoveredThisBatch++;
       }
     }
+
+    // A batch that resolves nothing means every remaining candidate has an unresolvable
+    // ISRC — without this, whereNull('a.country') would keep returning the same rows
+    // forever, since nothing in an all-unresolvable batch ever gets updated.
+    if (recoveredThisBatch === 0) break;
   }
 
   console.log(`[artists] recovered ${recovered} artists via ISRC fallback`);
