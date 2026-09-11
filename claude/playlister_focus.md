@@ -887,6 +887,31 @@ use the **union of all artists' genres** (genres are naturally multi-valued alre
 - A MusicBrainz batch that failed outright (503) left its artists with **no cache entry
   at all**, which later crashed a phase that assumed every artist had one — fixed by
   backfilling missing entries as `{country: null}` after each batch pass.
+- **The droplet has only 458MB RAM — genuinely tight, not a formality.** Any code path
+  that loads a whole global table into memory at once is a real OOM risk here, not just
+  a theoretical inefficiency. Confirmed live (Sep 11 2026): `resolveIsrcFallback()` used
+  to call `songsDb.getAll()` — the entire global `songs` table plus a full artist-join
+  map for every song — and once the shared library reached real multi-user scale, `dmesg`
+  showed the OOM killer taking it out mid-run (`anon-rss:191856kB` on a 458MB box), which
+  also knocked the live app/Cloudflare tunnel unresponsive for a few minutes (`530` at the
+  edge) until the kernel's kill freed memory back up. Fixed by rewriting
+  `resolveIsrcFallback()` to query only `(artist_id, isrc)` pairs for primary artists
+  still missing a country, in batches of 500 (`ISRC_FALLBACK_BATCH_SIZE`), with a
+  termination guard for an all-unresolvable batch (would otherwise re-fetch the same rows
+  forever, since nothing in it ever leaves the `whereNull('a.country')` set). **Before
+  adding any future code path that iterates "every song" or "every artist" globally,
+  check whether it needs the full row set in memory at once or can be pushed into SQL/
+  batched** — this box has no slack for the old "just load it all, it's just a
+  dev-scale table" assumption.
+- **Two country-resolution passes running at once (e.g. a second user logging in while
+  one's already in progress) is a real risk on this box, not just wasted API calls** —
+  each pass holds the full artist list plus in-flight batch state in memory
+  independently; running two concurrently on the 458MB droplet could OOM it again. There's
+  no lock preventing this today — `sources/syncQueue.js`'s `enrichQueue` only serializes
+  enrichment runs *triggered through the running app process itself*; a manually-launched
+  CLI run (`node scripts/sync.js <userId>`, e.g. for a droplet catch-up) is a fully
+  separate OS process the app-level queue knows nothing about. Avoid triggering a login/
+  Sync while a manual CLI sync is active on the droplet until this gets a real lock.
 - `Number(params.get(x)) || null` breaks for legitimately-zero values (0 is falsy) — use
   `params.has(x) ? Number(...) : null` instead.
 - Spotify occasionally returns a fully-blank stub for a track it has unlisted from its
@@ -1061,6 +1086,21 @@ confirmed. Not finished: 5 of 6 real users still need `node scripts/sync.js <use
 to repopulate their songs/playlists under the new schema. Full detail, exact commands,
 and user-id list to resume with: **"Droplet migration (Sep 5 2026)" under Deployment,
 above** — read that before doing anything else here.
+
+**In progress — country-source catch-up run (started Sep 11 2026, ~21:51 UTC, check if
+still running before touching enrichment/sync anything)**: kicked off manually on the
+droplet (`node scripts/sync.js 1231542486`, backgrounded via `nohup`/`disown`, log at
+`/tmp/enrichment-catchup-20260911c.log`) after adding `artists.country_source` (migration
+`20260911000001`) — see the "Country-of-origin pipeline" section above for the full bug
+writeup (ISRC-fallback guesses were permanently blocking real MusicBrainz/Wikidata
+retries) and "Known bugs" above for the OOM this run triggered and how it was fixed. Last
+checked: 14,618/18,369 artists resolved, memory stable ~114MB. Once it finishes: (1)
+confirm via the countries filter dropdown that diversity actually improved on prod
+(spot-check `Vangelis`/`4P70aqttdpJ9vuYFDmf7f6` — should read `GR`, not `GB`), (2) it's
+then safe again for other users to log in/sync (see the concurrent-enrichment-risk note
+under "Known bugs"), (3) consider whether the 5 still-unsynced droplet users (see
+"Droplet migration" above) should be synced now that country resolution won't
+permanently lock in bad ISRC guesses for them.
 
 **Open / not started:**
 - **Genre matching: exact-string vs. substring — asked, not yet answered.** Selecting the
