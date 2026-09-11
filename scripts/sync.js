@@ -169,8 +169,13 @@ const syncPlaylists = async (userId, accessToken, likedList, knexInstance = sync
 // ---------------------------------------------------------------------------
 
 // Skips artists already resolved, so safe to re-run every sync.
+// True until a real MusicBrainz/Wikidata match lands — an ISRC guess (or an untagged
+// legacy value from before country_source existed) still counts as worth retrying.
+const isUnconfirmed = (a) => a.countrySource !== 'musicbrainz' && a.countrySource !== 'wikidata';
+
 const resolveCountries = async (artistList, knexInstance = syncDb) => {
-  const toResolve = artistList.filter((a) => a.country === null);
+  const existingById = new Map(artistList.map((a) => [a.id, a]));
+  const toResolve = artistList.filter(isUnconfirmed);
 
   if (toResolve.length === 0) {
     console.log(`[artists] nothing to resolve (${artistList.length} artists cached)`);
@@ -197,7 +202,18 @@ const resolveCountries = async (artistList, knexInstance = syncDb) => {
     try {
       const results = await musicbrainz.resolveBatch(batch, breaker.recordRetry);
       for (const [id, result] of Object.entries(results)) {
-        await artistsDb.upsert(id, { name: result.name, country: result.country }, knexInstance);
+        // A retried artist may already carry an ISRC guess — a null search result here
+        // means "no country in this match," not "actually unresolved," so don't blank it
+        // out. Only a brand-new stub (no prior country at all) is safe to write null to.
+        if (result.country !== null || existingById.get(id)?.country === null) {
+          await artistsDb.upsert(
+            id,
+            { name: result.name, country: result.country, countrySource: result.country ? 'musicbrainz' : null },
+            knexInstance
+          );
+        } else {
+          await artistsDb.upsert(id, { name: result.name }, knexInstance);
+        }
         if (result.mbid && result.country === null) {
           needsFallback.push({ id, mbid: result.mbid });
         }
@@ -231,7 +247,7 @@ const resolveCountries = async (artistList, knexInstance = syncDb) => {
       try {
         const country = await musicbrainz.lookupArtistCountry(mbid, breaker.recordRetry);
         if (country) {
-          await artistsDb.upsert(id, { country }, knexInstance);
+          await artistsDb.upsert(id, { country, countrySource: 'musicbrainz' }, knexInstance);
           recovered++;
         }
       } catch (err) {
@@ -247,7 +263,7 @@ const resolveCountries = async (artistList, knexInstance = syncDb) => {
 
   // filter's callback can't await, so resolve everything first, then filter.
   const afterMusicbrainz = await Promise.all(toResolve.map((a) => artistsDb.getById(a.id, knexInstance)));
-  const stillNull = toResolve.filter((a, i) => afterMusicbrainz[i].country === null);
+  const stillNull = toResolve.filter((a, i) => isUnconfirmed(afterMusicbrainz[i]));
 
   if (stillNull.length > 0) {
     console.log(`[artists] trying Wikidata for ${stillNull.length} remaining artists`);
@@ -260,7 +276,7 @@ const resolveCountries = async (artistList, knexInstance = syncDb) => {
         const results = await wikidata.resolveWikidataBatch(batch);
         for (const [id, result] of Object.entries(results)) {
           if (result.country) {
-            await artistsDb.upsert(id, { country: result.country }, knexInstance);
+            await artistsDb.upsert(id, { country: result.country, countrySource: 'wikidata' }, knexInstance);
             wikidataResolved++;
           }
         }
@@ -276,7 +292,7 @@ const resolveCountries = async (artistList, knexInstance = syncDb) => {
     console.log(`[artists] recovered ${wikidataResolved}/${stillNull.length} via Wikidata`);
 
     const afterWikidata = await Promise.all(stillNull.map((a) => artistsDb.getById(a.id, knexInstance)));
-    const stillNullAfterWikidata = stillNull.filter((a, i) => afterWikidata[i].country === null);
+    const stillNullAfterWikidata = stillNull.filter((a, i) => isUnconfirmed(afterWikidata[i]));
 
     if (stillNullAfterWikidata.length > 0) {
       console.log(
@@ -306,8 +322,8 @@ const resolveCountries = async (artistList, knexInstance = syncDb) => {
           const countryByQid = await wikidata.lookupCountriesByQids(batch);
           for (const [id, qid] of Object.entries(qidById)) {
             const country = countryByQid.get(qid);
-            if (country && (await artistsDb.getById(id, knexInstance)).country === null) {
-              await artistsDb.upsert(id, { country }, knexInstance);
+            if (country && isUnconfirmed(await artistsDb.getById(id, knexInstance))) {
+              await artistsDb.upsert(id, { country, countrySource: 'wikidata' }, knexInstance);
               fuzzyResolved++;
             }
           }
@@ -338,7 +354,7 @@ const resolveIsrcFallback = async (knexInstance = syncDb) => {
     if (entry && entry.country === null) {
       const country = isrcCountry.countryFromIsrc(song.isrc);
       if (country) {
-        await artistsDb.upsert(primary.id, { country }, knexInstance);
+        await artistsDb.upsert(primary.id, { country, countrySource: 'isrc' }, knexInstance);
         recovered++;
       }
     }

@@ -5,6 +5,7 @@ const rowToArtist = (row, genres) => ({
     id: row.id,
     name: row.name,
     country: row.country,
+    countrySource: row.country_source,
     genres,
     popularity: row.popularity,
     followers: row.followers,
@@ -46,6 +47,7 @@ const upsert = async (id, patch, knexInstance = db) => {
       id,
       name: patch.name ?? existing?.name ?? null,
       country: 'country' in patch ? patch.country : (existing?.country ?? null),
+      country_source: 'countrySource' in patch ? patch.countrySource : (existing?.country_source ?? null),
       popularity: 'popularity' in patch ? patch.popularity : (existing?.popularity ?? null),
       followers: 'followers' in patch ? patch.followers : (existing?.followers ?? null),
       // genres/popularity arrive together — either key means that backfill pass has run.

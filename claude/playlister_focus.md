@@ -820,6 +820,45 @@ independent artists absent from every free structured source tried. Raw web sear
 works as a manual research fallback but requires per-artist human/LLM judgment, not a
 programmatic API call — not automated.
 
+**`artists.country_source` (added Sep 11 2026, migration `20260911000001`)** — tags a
+resolved country as `'musicbrainz'` / `'wikidata'` / `'isrc'` / null, fixing a real bug
+this surfaced: the fast per-login sync runs ISRC fallback (crude — label/registrant
+country, not the artist's real origin) *before* the slow background `runEnrichment`
+pass gets a chance at the real MusicBrainz/Wikidata cascade, and both only ever wrote to
+`artists.country`. Since `resolveCountries()`'s old skip condition was just `country ===
+null`, an ISRC guess written first looked exactly like a confirmed real match and
+permanently blocked the better cascade from ever retrying that artist — local (many
+independent sync runs over time, no ISRC guesses ever "locking in" a retry-block this
+way) and the droplet (one big post-migration resync where this had real room to bite)
+diverged hard as a result: **verified directly**, same artist ID (Vangelis,
+`4P70aqttdpJ9vuYFDmf7f6`, genuinely Greek), `country: GR` locally vs `country: GB` on
+the droplet, both marked `details_resolved: 1`. Multiplied across many artists, this is
+why the droplet's country filter dropdown looked visibly less diverse than local's (56
+vs 93 distinct codes on Lucas's own account) — not a frontend bug, a resolution-quality
+regression.
+
+Fix: `resolveCountries()`'s retry gate is now `isUnconfirmed(artist)` (`countrySource`
+isn't `'musicbrainz'`/`'wikidata'`) instead of `country === null`, applied consistently
+at every stage's "who's still unresolved" check (post-MusicBrainz, post-Wikidata-exact,
+the Wikidata-fuzzy write guard). This means every currently ISRC-sourced *or untagged
+legacy* (written before this column existed) artist across the whole shared cache is
+now retry-eligible — **a much bigger MusicBrainz/Wikidata pass than a normal
+run** the first time enrichment executes post-deploy, global (not scoped to one user),
+at MusicBrainz's ~1 req/sec. Real care was needed so a retry that doesn't find a better
+match can't blank out the existing ISRC guess: `resolveCountries()`'s MusicBrainz-batch
+write only overwrites to `null` when the artist had no country at all before this run
+started (`existingById` snapshot taken at the top of the function) — otherwise it only
+updates the name and leaves the existing (crude but present) country/source alone.
+Order is unchanged — ISRC fallback still runs first in `runFastSync` so a first-time
+visitor gets *something* immediately; the background `runEnrichment` pass (already
+driving the post-load "Syncing…" UI) is what now actually gets to upgrade it later,
+instead of being silently blocked.
+
+**Not yet done**: the one-time catch-up enrichment run against the droplet's real
+~15,877-artist shared cache (kick off after deploy, expect it to run considerably
+longer than a normal enrichment pass — this is the intended one-time cost of the fix,
+not a bug).
+
 **Decisions**: multi-artist songs use the **primary (first) artist's country**; genres
 use the **union of all artists' genres** (genres are naturally multi-valued already).
 
