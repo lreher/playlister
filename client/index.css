@@ -1116,6 +1116,10 @@ h1 {
     display: flex;
   }
 
+  .theme-toggle {
+    display: none;
+  }
+
   /* Tighter header/tabs/panel padding — several stacked bands of chrome was most of
      what read as "noisy" before any song is even visible. */
   .app-header {
