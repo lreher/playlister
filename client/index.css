@@ -359,6 +359,11 @@ h1 {
   gap: 0.5rem;
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
+  scrollbar-width: none;
+}
+
+#tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .tab-button {
