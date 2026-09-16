@@ -323,10 +323,11 @@ these CSS vars **fresh on every call** (`getChartTheme()`), and a theme switch r
 `<Dashboards key={`${dataVersion}:${theme}`}>` to recolour the charts — CSS-only
 surfaces recolour instantly, no remount needed.
 
-Layout: the theme toggle lives in the tab bar; Sync/Delete/Create-Playlist moved into a
-`.table-footer` below the table (List tab only, `1fr auto 1fr` grid — spacer | centred
-pagination | right-aligned controls). Renders through loading/error too, so Delete stays
-reachable if the table fails.
+Layout (superseded Sep 11 2026 — see "Delete button removed entirely, Sync moved into
+the top toolbar" further down; kept here as history of how this evolved): the theme
+toggle lives in the tab bar; Sync/Delete/Create-Playlist moved into a `.table-footer`
+below the table (List tab only, `1fr auto 1fr` grid — spacer | centred pagination |
+right-aligned controls).
 
 **Two real CSS bugs worth remembering:**
 - A `:hover` rule losing to another rule at equal specificity — fixed by matching the
@@ -631,6 +632,206 @@ removals.
     genre-family variant as its own chip) — **not yet answered, conversation moved on to
     an unrelated bug (Dashboards loading layout) before circling back.** Pick this back up
     before doing more genre-filter work.
+
+## Mobile responsiveness — first pass (Sep 11 2026)
+
+Client had zero mobile handling before this — no viewport meta tag, no media queries
+anywhere. First real mobile pass, scoped to layout only (not a native/PWA/wrapper app —
+Lucas picked plain responsive web over those options when asked).
+
+**Table strategy — picked from 3 wireframed options, shown as phone-frame mockups in a
+Claude Design canvas artifact (a genuinely useful way to compare layout directions before
+writing code — worth reusing for future UI-shape decisions)**: horizontal-scroll table,
+stacked cards, and compact-table-with-tap-to-expand. Lucas picked **stacked cards**
+outright, no back-and-forth — most mobile-native feel, worth the extra per-table markup.
+
+**Implementation** (`client/index.css`'s `@media (max-width: 600px)` block at the end of
+the file, plus new `.mobile-card`/`.card-*` classes above it):
+- `List` (`SongTable`), `Playlist`, and `Events` each render **two full markups** for
+  their row data — the existing `<table>` (`.data-table-wrap`) and a new `.card-list` of
+  `.mobile-card` divs — toggled by the media query (`display: none` either way, not a JS
+  resize check). Same pattern App.jsx already uses for tab switching
+  (`style={{display: tab === x ? '' : 'none'}}`), just CSS-driven instead of JS-driven —
+  no new hook, no duplicate fetch, just duplicate render output for the same page of data
+  (≤50 rows).
+- Card fields intentionally differ per page to match what each table actually shows:
+  List gets Album/Added/Country + genre chips (genre chips reuse `.genre-chip` with a new
+  `.static` modifier — same pill, no hover-fill, since a card's chips aren't clickable
+  filters); Playlist keeps it to Album (Name/Artist/Year already in the card header);
+  Events comma-joins multi-artist events into one card title rather than the table's
+  stacked-per-artist rows (a real simplification, not full parity — accepted for a first
+  pass).
+- List's cards reuse `SongTable`'s existing `handleRowMouseDown`/`handleRowMouseEnter`
+  selection handlers directly — a tap fires the same `mousedown` a click would, so
+  single-tap select/deselect works unchanged. **Known, accepted gap**: drag-select does
+  not work on touch (no `mouseenter` during a touch-drag) — single-tap-per-song still
+  works, just no spreadsheet-style multi-select drag on a phone. Not fixed; out of scope
+  for a first pass.
+- Filters (`.filter-row`, already `flex-wrap: wrap`) stack to a single column on mobile
+  and every input goes full-width, rather than relying on wrap alone.
+- Tab bar (`#tabs`) got `overflow-x: auto` **unconditionally** (not gated by the media
+  query) — harmless at desktop widths, and it's what stops 4 tabs + the theme toggle from
+  either wrapping badly or forcing the whole page to scroll sideways on a narrow screen.
+- Dashboards needed **no changes** — `#dashboards` was already `flex-direction: column`
+  (one chart per row, not a grid), and each chart's ECharts instance sizes to its
+  container's actual width at mount, so a phone-width mount already renders correctly.
+  Not yet verified on a real phone, just reasoned from the existing layout.
+
+**Collapsible filters (same session, first real-usage feedback)**: `#filters` gained a
+`.filters-header` toggle button ("Filters ▾/▸") above the two filter rows —
+`client/pages/songList/Filters/index.jsx`'s `collapsed` state, persisted to
+`localStorage` (`playlister:filtersCollapsed`) the same way theme/selected-songs already
+are. First shipped defaulting to expanded (to not change existing desktop behavior);
+Lucas immediately corrected that — **defaults to collapsed** for anyone with no stored
+preference yet (`loadStoredCollapsed` treats a missing key as `true`, not `false`),
+across both desktop and mobile, not just narrow screens.
+
+**Decluttering pass (same session)**: Lucas sent a real screenshot from his phone —
+"looks really busy and cluttered, looks very amateur." Rather than iterate in code
+directly, drafted rough before/after wireframes as **hand-rolled PNGs** (a small Node
+script using only `zlib.deflateSync`/`zlib.crc32` — both built in, no dependency, no
+browser, no Claude Design canvas — to manually encode a PNG: a deliberately low-token
+alternative to the design skill's canvas workflow used for the earlier table-shape
+decision, saved as plain files under `tmp/` — gitignored, this project's own scratch
+space — rather than a published Claude Design artifact, since he asked for something
+lighter-weight this time, not a link). Two rounds: a first before/after wireframe (which
+he approved with "better, but still too much noise up top"), then a second wireframe
+consolidating the header area further. Once he said "build this," implemented:
+- **Filters + toolbar merged into one row on mobile**: previously two full-width bands
+  (a bordered Filters card, then a separate toolbar). The collapse toggle moved out of
+  `Filters` itself and up into `SongList` (`client/pages/songList/index.jsx`) as lifted
+  state, rendered **twice** — once above the filter rows (`.filters-header-desktop`) and
+  once inline inside `SongTable`'s toolbar (`.filters-toggle-mobile`, passed down as a
+  `filtersToggle` prop) — same show-one-hide-the-other-by-media-query pattern as the
+  table/card-list split, just applied to a control instead of data rows. `#filters`
+  itself gets a `.collapsed-mobile` class that hides the whole panel outright on mobile
+  when collapsed (rather than showing an empty bordered box with nothing inside it).
+- **Toolbar buttons go ghost/text-only on mobile**, keeping only the one filled action
+  (Select All / Run Search / Create Playlist) as a solid pill — `.toolbar .page-button:
+  not(.filled)` in the mobile media query. Deliberately scoped to *any* `.toolbar`, not
+  just List's, so Events' and Playlist's Previous/Next/Undo/Clear get the same treatment
+  for free.
+- **Card meta fields merged into one line** (`song.album · addedDate · country`, reusing
+  the existing `.card-subtitle` class rather than a new one) instead of three separately
+  labeled grid cells.
+- **Genre chips capped at 3 visible + "+N more"** (`CARD_VISIBLE_GENRES` in
+  `SongTable/index.jsx`), and switched from a bordered pill (`.genre-chip.static`, now
+  replaced) to a flat, borderless fill (`.genre-chip.flat`, background `var(--row-hover)`)
+  since a card's chips aren't clickable filters.
+- **Tighter chrome overall**: `.app-header`/`#tabs` margins and `#app`/`#events`/
+  `#playlist`/`#filters` panel padding all reduced under the mobile breakpoint — several
+  stacked full-padding bands before any content was a real part of what read as "busy."
+
+**Bug from real phone use, fixed same session**: expanding the merged mobile toggle
+opened the filter rows **above** the toggle (since `#filters` still preceded `#app` in
+the DOM, and the toggle had moved down into `#app`'s toolbar) — every expand pushed the
+toggle further down the page, so closing it again meant scrolling to find where it had
+moved to. Fix: `#filters` (with its own toggle + rows) is now **hidden outright on
+mobile**, and `SongTable` renders a *second* `<Filters>` instance
+(`.filters-panel-mobile`, `client/pages/songList/index.jsx`'s `filtersRows(collapsed)`
+helper called twice) positioned right after its toolbar — so expanding on mobile always
+opens directly below the button just pressed, growing the page downward into the table
+instead of upward past it. Both instances share the same lifted `collapsed` state, so
+they can never disagree; each has its own internal `options` fetch/`resetToken`/
+`genreInputToken`, since only one is ever visible per viewport — an accepted, cheap
+duplication (one extra `/api/filters` call), same "duplicate render, let CSS pick one"
+pattern already used for the table/card-list split and the toggle button itself.
+
+**Immediate follow-up bug**: that new `.filters-panel-mobile` wrapper had none of
+`#filters`'s actual panel styling (background/border/radius/shadow/padding/gap, plus
+Clean theme's frosted-glass blur and tinted select backgrounds) — it's a different
+element, CSS doesn't inherit box styling across selectors, so the mobile filter rows
+rendered as bare unstyled controls. Fixed by literally sharing the rules instead of
+duplicating them: `#filters`'s panel-chrome block and both Clean-theme override blocks
+now list `.filters-panel-mobile` alongside `#filters` in their selectors, and the
+select/search-input styling rules were generalized from `#filters select` to
+`.filter-row select` (matches either instance, since both render `.filter-row`
+internally) rather than copy-pasted per instance.
+
+**Third round — merged row itself looked "weirdly aligned and busy" with an odd gap**:
+two real issues, both from CSS written for the old, wider desktop-only toolbar not
+translating to the new narrower merged row:
+- `.select-all-button` carries `margin-left: auto` (shared with Events' `.search-button`
+  and Playlist's `.create-playlist-button`) to sit alone on the far right — correct on
+  desktop, but on the merged mobile row (Filters toggle now sharing the same row) it
+  opened a big awkward void between the status text and the button. Fixed narrowly:
+  `.filters-toggle-mobile ~ .select-all-button { margin-left: 0; }` inside the mobile
+  media query only — a sibling selector scoped specifically to List's toolbar (the only
+  one with the mobile toggle), so Events/Playlist's existing right-pushed buttons are
+  untouched.
+- The Filters toggle had no padding (`.filters-header`'s base `padding: 0`) while the
+  ghost Previous/Next buttons next to it did (`0.4rem 0.5rem`) — same 0.5rem CSS `gap`
+  between every item, but uneven-looking whitespace since only some of them carried their
+  own inner padding. Gave `.filters-toggle-mobile .filters-header` the same mobile
+  padding as the ghost buttons so the whole row reads as one consistent rhythm; also
+  tightened the toolbar's own `gap` from 0.5rem to 0.25rem now that every item carries
+  its own padding.
+
+**Fourth round — still not happy, asked for 3 wireframed options for the merged row
+specifically**: same rough-PNG approach (`tmp/toolbar-row-options.png` — like the other
+wireframe PNGs in `tmp/`, throwaway scratch once a decision's made, not meant to be kept
+around as documentation). Picked **option 3**: drop Previous/Next/
+status from the top row entirely on mobile — List already has a page-number bar at the
+bottom of the table (the shared `Pagination` component), so showing paging controls in
+two places on one screen was the actual redundancy driving the "busy" feeling, not
+spacing/alignment. Top row is now just Filters + Select All on mobile.
+Implementation: `SongTable/index.jsx` wraps Previous/Next/status in a
+`<div className="pagination-inline">` — `display: contents` by default (children lay out
+exactly as if they were still direct `.toolbar` children, zero desktop change) and
+`display: none` under the mobile breakpoint (the whole group disappears as one unit).
+Deliberately scoped to List only, not Events (same shared-`Pagination`-at-the-bottom
+redundancy exists there too, but wasn't part of what was actually being shown/complained
+about) or Playlist (its toolbar's Undo/Clear are real actions with no bottom-bar
+equivalent — hiding them would have been a real functionality loss, not decluttering).
+
+**Delete button removed entirely (Sep 11 2026), Sync moved into the top toolbar**: a
+real product decision, not mobile-scoped — the "wipe the entire multi-user database"
+button (see "Status/open items" — flagged from the start as something to revisit once
+real users were on it, and by now 6 real users are) is gone, end to end, not just hidden:
+`App.jsx`'s `handleDelete`/`deleting` state and the button, `client/api.js`'s
+`wipeDatabase()`, `routes/index.js`'s `POST /api/wipe-database` route (and its
+`requireSession` gate — it was reachable by *any* logged-in user, not just Lucas, this
+whole time), and `sources/wipeDatabase.js` itself are all deleted. Left dangling backend
+capability out of a UI-only removal didn't seem like the right call given real users are
+on this now. In its place: **Sync moved from the bottom `.table-footer` into the top
+`.toolbar`**, sitting immediately left of Select All (both now form one right-aligned
+group via `margin-left: auto` on `.library-controls`, with a
+`.library-controls + .select-all-button { margin-left: 0; }` override so Select All
+doesn't also try to auto-margin away from it — two adjacent auto-margins would have split
+the free space between them instead of grouping the pair at the edge). `.table-footer`
+now holds only the page-number `Pagination` bar for every page that has one (List,
+Events) — its 3-column grid was left as-is since an empty third column still keeps
+pagination optically centered, same as Events already relied on.
+
+**Two corrections to land on the actual ask**: hiding List's pagination controls
+entirely on mobile turned out to be one decluttering step too far, so Lucas asked for
+Previous/Next/status back. Took two wrong turns before landing on what he meant:
+1. First attempt: brought them back on a dedicated second row below Filters/Sync/Select
+   All, in their **original bordered** `.page-button` look — called out as looking
+   terrible, wanted "the style Events currently uses" instead.
+2. Read that as "put them back in the single row, ghost-styled, like Events" — also
+   wrong: "the top row still stays the same [Filters/Sync/Select All] — the previous,
+   next, and location stuff goes on the bottom." He wanted the **two-row split from
+   attempt 1**, just with Events' **ghost button styling** instead of the original
+   bordered look — not a single merged row after all.
+Landed on: `.pagination-inline` keeps `order: 1; flex-basis: 100%;` inside the mobile
+media query (every other toolbar child stays the default `order: 0`, so this sorts last
+and force-wraps to its own row — no DOM reordering, no desktop impact), but the
+ghost-button rule stays the plain descendant combinator (`.toolbar .page-button:
+not(.filled)`, not narrowed to direct children) so it still reaches Previous/Next inside
+`.pagination-inline`. Net result: two rows, both ghost-styled like Events — top row
+Filters + Sync + Select All, bottom row Previous/Next/status.
+
+**Not done / not verified in this pass**:
+- Range slider thumbs (duration/liked-date/popularity filters) are still a fixed
+  14×14px hit target — not resized for touch. Pre-existing control, left alone
+  deliberately to keep this pass scoped to layout breakage, not a touch-ergonomics
+  redesign.
+- Nothing in this pass has been checked on a real phone yet or even a resized desktop
+  browser — Lucas tests/runs the app himself (see musings.md's "never launch browser
+  automation against this app's server" rule). Resize a browser window below 600px (or
+  DevTools' device toolbar) to see the card layout; `npm run watch` + `npm start` as
+  usual.
 
 ## Data files (all gitignored — never commit, never delete without an explicit ask)
 
@@ -1119,9 +1320,5 @@ permanently lock in bad ISRC guesses for them.
   a stale cached `bundle.js`, resolved by a hard refresh — see the "Verification" note
   added to musings.md.
 - The stray `artist-countries copy.json` file's origin is unexplained.
-- The Delete button wipes the entire database (every user's data) and isn't gated to one
-  admin — Lucas's explicit, knowing call ("yes I understand how dumb that sounds").
-  Worth revisiting once other users are actually using this day-to-day, not just Lucas
-  testing solo.
 - Cross-tenant isolation is verified for real identities, but a deliberate side-by-side
   two-account pass is still worth doing.

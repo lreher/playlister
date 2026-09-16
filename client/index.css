@@ -197,7 +197,7 @@
   box-shadow: none;
 }
 
-/* Primary actions (Create Playlist / Sync / Delete) — same shape, just a
+/* Primary actions (Create Playlist / Sync / Select All) — same shape, just a
    stronger resting tint so they still read as primary. */
 :root[data-theme='clean'] .page-button.filled {
   background: rgba(74, 100, 216, 0.01);
@@ -246,6 +246,7 @@
 :root[data-theme='clean'] #events,
 :root[data-theme='clean'] #playlist,
 :root[data-theme='clean'] #filters,
+:root[data-theme='clean'] .filters-panel-mobile,
 :root[data-theme='clean'] .card {
   background: rgba(255, 255, 255, 0.15);
   border-color: rgba(255, 255, 255, 0.6);
@@ -279,12 +280,13 @@
 }
 
 :root[data-theme='clean'] #filters,
+:root[data-theme='clean'] .filters-panel-mobile,
 :root[data-theme='clean'] .card {
   backdrop-filter: blur(20px) saturate(150%);
   -webkit-backdrop-filter: blur(20px) saturate(150%);
 }
 
-:root[data-theme='clean'] #filters select,
+:root[data-theme='clean'] .filter-row select,
 :root[data-theme='clean'] .filter-search-input {
   background: rgba(255, 255, 255, 0.22);
   border-color: rgba(120, 135, 190, 0.35);
@@ -356,6 +358,7 @@ h1 {
   display: flex;
   gap: 0.5rem;
   border-bottom: 1px solid var(--border);
+  overflow-x: auto;
 }
 
 .tab-button {
@@ -428,14 +431,16 @@ h1 {
   color: var(--text);
 }
 
-/* Sync + Delete — grid-placed to the right of the pagination row (see
-   .table-footer), moved out of the tab bar. Full size, filled style (see
-   .page-button.filled), matching Create Playlist. */
+/* Sync — sits in the top toolbar immediately left of Select All (margin-left: auto
+   pushes this whole group to the right edge; see the .select-all-button rule below for
+   why Select All itself doesn't also need the auto margin here). Full size, filled
+   style (see .page-button.filled), matching Create Playlist. */
 .library-controls {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .playlist-modal {
@@ -469,9 +474,8 @@ h1 {
   margin-top: 1.25rem;
 }
 
-/* Three tracks: empty spacer | centered pagination | right-aligned
-   Sync/Delete. The spacer balances the controls column so the pagination
-   bar stays optically centered under the table. */
+/* Just the page-number bar now (Sync/Select All live in the top toolbar instead) — the
+   3-column grid still keeps it optically centered rather than left-aligned. */
 .table-footer {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -483,11 +487,6 @@ h1 {
 .table-footer .pagination {
   grid-column: 2;
   margin: 0;
-}
-
-.table-footer .library-controls {
-  grid-column: 3;
-  justify-self: end;
 }
 
 #dashboards {
@@ -520,9 +519,8 @@ h1 {
   height: 500px;
 }
 
-#filters {
-  max-width: 1400px;
-  margin: 0 auto 1rem;
+#filters,
+.filters-panel-mobile {
   padding: var(--panel-pad-filters);
   display: flex;
   flex-direction: column;
@@ -533,6 +531,11 @@ h1 {
   box-shadow: var(--panel-shadow);
 }
 
+#filters {
+  max-width: 1400px;
+  margin: 0 auto 1rem;
+}
+
 .filter-row {
   display: flex;
   flex-wrap: wrap;
@@ -540,7 +543,49 @@ h1 {
   gap: 0.75rem;
 }
 
-#filters select,
+.filters-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.filters-header:hover {
+  color: var(--text);
+}
+
+.filters-toggle {
+  font-size: 0.75rem;
+}
+
+/* The toggle is rendered twice — above the filter rows (desktop) and inline in the
+   mobile toolbar row (see the @media block for which one shows). */
+.filters-toggle-mobile {
+  display: none;
+}
+
+.filters-toggle-mobile .filters-header {
+  width: auto;
+  justify-content: flex-start;
+  gap: 0.3rem;
+}
+
+/* The mobile copy of the filter rows (see SongTable) — sits right after the toolbar
+   so expanding opens downward from the toggle, never above it. Desktop uses the
+   separate #filters panel above the table instead. */
+.filters-panel-mobile {
+  display: none;
+}
+
+.filter-row select,
 .filter-search-input {
   padding: 0.4rem 0.75rem;
   border: 1px solid var(--border);
@@ -551,7 +596,7 @@ h1 {
   font-size: 0.875rem;
 }
 
-#filters select:focus,
+.filter-row select:focus,
 .filter-search-input:focus {
   outline: none;
   border-color: var(--accent);
@@ -592,6 +637,18 @@ h1 {
 .genre-chip:hover {
   background: var(--accent);
   color: var(--accent-contrast);
+}
+
+/* Read-only genre chip inside a mobile card — not a filter control, so no border/hover-fill. */
+.genre-chip.flat {
+  cursor: default;
+  border-color: transparent;
+  background: var(--row-hover);
+}
+
+.genre-chip.flat:hover {
+  background: var(--row-hover);
+  color: var(--accent);
 }
 
 .range-slider {
@@ -732,6 +789,14 @@ h1 {
   margin-bottom: 1rem;
 }
 
+/* A transparent wrapper — its children (Previous/Next/status) lay out as if they were
+   direct .toolbar children on desktop, but the whole group disappears as one unit on
+   mobile (see the @media block), where paging happens via the page-number bar at the
+   bottom of the table instead. */
+.pagination-inline {
+  display: contents;
+}
+
 .status {
   color: var(--text-muted);
   font-size: 0.875rem;
@@ -796,7 +861,7 @@ h1 {
    some themes). :not(:disabled) matches .page-button:hover's specificity
    so this wins by being later in the file. */
 .reset-filters-button {
-  margin-left: auto;
+  align-self: flex-end;
   background: transparent;
   border-color: var(--border);
   color: var(--text-muted);
@@ -809,7 +874,7 @@ h1 {
 }
 
 /* Solid accent fill (the gradient in Studio, flat green in Classic) —
-   Create Playlist, Sync, Delete. */
+   Create Playlist, Sync, Select All. */
 .page-button.filled {
   background: var(--accent-fill);
   border-color: transparent;
@@ -826,6 +891,13 @@ h1 {
 .search-button,
 .select-all-button {
   margin-left: auto;
+}
+
+/* Sync (.library-controls) already claims the auto margin and sits immediately before
+   Select All — without this, both having margin-left: auto would split the free space
+   between them instead of grouping them together at the right edge. */
+.library-controls + .select-all-button {
+  margin-left: 0;
 }
 
 /* Stuck "pressed" look while every row on the page is selected — darker fill + an inset
@@ -926,4 +998,198 @@ h1 {
 .songs-table td:nth-child(5),
 .songs-table td:nth-child(7) {
   color: var(--text-muted);
+}
+
+/* Mobile card list — same row data as .data-table, shown instead of it below the
+   mobile breakpoint (see the @media block at the end of this file). */
+.card-list {
+  display: none;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.mobile-card {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 0.65rem 0.85rem;
+  box-shadow: var(--panel-shadow);
+}
+
+.mobile-card.selectable {
+  cursor: pointer;
+}
+
+.mobile-card.selected {
+  background: var(--row-hover);
+}
+
+.card-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-meta {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.card-subtitle {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.card-fields.two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.card-field-label {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.card-field-value {
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.5rem;
+}
+
+@media (max-width: 600px) {
+  body {
+    padding: 1rem;
+  }
+
+  .filter-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filter-row select,
+  .filter-search-input,
+  .genre-filter,
+  .range-slider {
+    width: 100%;
+  }
+
+  .data-table-wrap {
+    display: none;
+  }
+
+  .card-list {
+    display: flex;
+  }
+
+  /* Tighter header/tabs/panel padding — several stacked bands of chrome was most of
+     what read as "noisy" before any song is even visible. */
+  .app-header {
+    margin-bottom: 0.75rem;
+  }
+
+  #tabs {
+    margin-bottom: 0.75rem;
+  }
+
+  .tab-button {
+    padding: 0.5rem 0.7rem;
+  }
+
+  #app,
+  #events,
+  #playlist,
+  #filters,
+  .filters-panel-mobile {
+    padding: 0.6rem 0.85rem 0.4rem;
+  }
+
+  /* The desktop Filters panel (header + rows, above the table) is fully replaced on
+     mobile by the toggle merged into the toolbar row below plus its own copy of the
+     filter rows rendered right after that row (.filters-panel-mobile) — so expanding
+     always opens directly below the button you pressed, never above it. */
+  #filters {
+    display: none;
+  }
+
+  .filters-toggle-mobile {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .filters-panel-mobile {
+    display: flex;
+    width: 100%;
+    margin-top: 0.5rem;
+  }
+
+  /* Filters toggle + Sync/Select All stay on the top row; Previous/Next/status wrap to
+     their own row below (via .pagination-inline's `order`, right below). Ghost-button
+     styling still reaches both rows — same visual language Events' toolbar already
+     uses, just split across two lines instead of one. */
+  .toolbar {
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  /* `order: 1` (every other toolbar child keeps the default order: 0) sorts this after
+     Filters/Sync/Select All without touching DOM order; `flex-basis: 100%` forces the
+     wrap onto its own line instead of trailing the first one. */
+  .pagination-inline {
+    order: 1;
+    flex-basis: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  /* Only the filled action(s) (Select All / Sync / Run Search / Create Playlist) stay
+     heavy bordered pills — everything else in a toolbar goes ghost/text-only, matching
+     padding so the row reads as one consistent rhythm. */
+  .toolbar .page-button:not(.filled),
+  .filters-toggle-mobile .filters-header {
+    border: none;
+    background: transparent;
+    padding: 0.4rem 0.5rem;
+    color: var(--text-muted);
+  }
+
+  .toolbar .page-button:not(.filled):hover:not(:disabled) {
+    background: transparent;
+    color: var(--text);
+  }
+
+  .toolbar .page-button:not(.filled):disabled {
+    color: var(--text-muted);
+    opacity: 0.5;
+  }
 }

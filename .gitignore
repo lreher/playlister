@@ -4,3 +4,4 @@ data/
 claude/musings.md
 static/bundle.js
 static/bundle.css
+tmp/

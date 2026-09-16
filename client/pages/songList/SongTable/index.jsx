@@ -6,8 +6,9 @@ import { Pagination } from '../../../components/Pagination';
 
 const LIMIT = 50;
 const COLUMNS = ['Name', 'Artist(s)', 'Album', 'Year', 'Added', 'Country', 'Genres'];
+const CARD_VISIBLE_GENRES = 3;
 
-export const SongTable = ({ filters, dataVersion, controls, selectedIds, onSelectSongs }) => {
+export const SongTable = ({ filters, dataVersion, controls, selectedIds, onSelectSongs, filtersToggle, filtersPanel }) => {
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState(null);
   const [error, setError] = useState(null);
@@ -65,23 +66,27 @@ export const SongTable = ({ filters, dataVersion, controls, selectedIds, onSelec
   return (
     <>
       <div className="toolbar">
-        <button
-          className="page-button"
-          disabled={!page || page.offset === 0}
-          onClick={() => page && setOffset(Math.max(0, page.offset - LIMIT))}
-        >
-          Previous
-        </button>
-        <button
-          className="page-button"
-          disabled={!page || page.offset + page.items.length >= page.total}
-          onClick={() => page && setOffset(page.offset + LIMIT)}
-        >
-          Next
-        </button>
-        <p className="status">
-          {error ? 'Could not load songs' : page ? `${from}-${to} of ${page.total}` : 'Loading…'}
-        </p>
+        {filtersToggle}
+        <div className="pagination-inline">
+          <button
+            className="page-button"
+            disabled={!page || page.offset === 0}
+            onClick={() => page && setOffset(Math.max(0, page.offset - LIMIT))}
+          >
+            Previous
+          </button>
+          <button
+            className="page-button"
+            disabled={!page || page.offset + page.items.length >= page.total}
+            onClick={() => page && setOffset(page.offset + LIMIT)}
+          >
+            Next
+          </button>
+          <p className="status">
+            {error ? 'Could not load songs' : page ? `${from}-${to} of ${page.total}` : 'Loading…'}
+          </p>
+        </div>
+        {controls}
         <button
           className={`page-button filled select-all-button ${allPageSelected ? 'active' : ''}`}
           disabled={!page || page.items.length === 0}
@@ -90,6 +95,7 @@ export const SongTable = ({ filters, dataVersion, controls, selectedIds, onSelec
           Select All
         </button>
       </div>
+      <div className="filters-panel-mobile">{filtersPanel}</div>
       {error && <div className="table-message">Error: {error}</div>}
       {!error && !page && <div className="table-message">Loading…</div>}
       {page && (
@@ -121,11 +127,43 @@ export const SongTable = ({ filters, dataVersion, controls, selectedIds, onSelec
           </table>
         </div>
       )}
+      {page && (
+        <div className="card-list">
+          {page.items.map((song) => (
+            <div
+              key={song.id}
+              className={`mobile-card selectable ${selectedIds.has(song.id) ? 'selected' : ''}`}
+              onMouseDown={(event) => handleRowMouseDown(song, event)}
+              onMouseEnter={() => handleRowMouseEnter(song)}
+            >
+              <div className="card-top">
+                <div className="card-title">{song.name}</div>
+                <div className="card-meta">{song.year ?? '—'}</div>
+              </div>
+              <div className="card-subtitle">{song.artists}</div>
+              <div className="card-subtitle">
+                {song.album} · {new Date(song.addedAt).toLocaleDateString()} · {countryLabel(song.country)}
+              </div>
+              {song.genres.length > 0 && (
+                <div className="card-chips">
+                  {song.genres.slice(0, CARD_VISIBLE_GENRES).map((g) => (
+                    <span key={g} className="genre-chip flat">
+                      {g}
+                    </span>
+                  ))}
+                  {song.genres.length > CARD_VISIBLE_GENRES && (
+                    <span className="card-meta">+{song.genres.length - CARD_VISIBLE_GENRES} more</span>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="table-footer">
         {page && (
           <Pagination offset={page.offset} limit={LIMIT} total={page.total} onOffsetChange={setOffset} />
         )}
-        {controls}
       </div>
     </>
   );

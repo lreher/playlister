@@ -2,7 +2,6 @@ const FindMyWay = require('find-my-way');
 const spotify = require('../sources/spotify');
 const session = require('../sources/session');
 const syncQueue = require('../sources/syncQueue');
-const { wipeDatabase } = require('../sources/wipeDatabase');
 const enrichmentProgress = require('../sources/enrichmentProgress');
 const eventsSearch = require('../sources/eventsSearch');
 const eventsSearchProgress = require('../sources/eventsSearchProgress');
@@ -220,23 +219,6 @@ router.on(
       res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({ error: err.message }));
     }
-  })
-);
-
-// Dev tool — deletes the ENTIRE database for every user. Open to any logged-in
-// session, not gated to one admin (Lucas's explicit call).
-router.on(
-  'POST',
-  '/api/wipe-database',
-  requireSession((req, res) => {
-    session.clearSessionCookie(res);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    // Wait for the response to flush before exiting. Exit code 1, not 0, so systemd's
-    // Restart=on-failure brings the process back up against the freshly-empty database.
-    res.end(JSON.stringify({ ok: true }), () => {
-      wipeDatabase();
-      process.exit(1);
-    });
   })
 );
 

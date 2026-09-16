@@ -28,15 +28,6 @@ export const requestSync = async () => {
 
 export const getEnrichmentStatus = () => fetchJson('/api/enrichment-status');
 
-export const wipeDatabase = async () => {
-  const res = await fetch('/api/wipe-database', { method: 'POST' });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || 'Failed to delete');
-  }
-  return res.json();
-};
-
 export const getFilters = () => fetchJson('/api/filters');
 
 export const getStats = () => fetchJson('/api/stats');

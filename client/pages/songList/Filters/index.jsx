@@ -23,7 +23,20 @@ export const EMPTY_FILTERS = {
   popularityMax: null,
 };
 
-export const Filters = ({ filters, onChange, onReset, dataVersion }) => {
+// The collapse toggle itself lives above this component (see SongList) so it can sit
+// inside the mobile toolbar row too, not just above the filter rows.
+export const FILTERS_COLLAPSED_KEY = 'playlister:filtersCollapsed';
+
+export const loadStoredFiltersCollapsed = () => {
+  try {
+    const stored = localStorage.getItem(FILTERS_COLLAPSED_KEY);
+    return stored === null ? true : stored === 'true';
+  } catch {
+    return true;
+  }
+};
+
+export const Filters = ({ filters, onChange, onReset, dataVersion, collapsed }) => {
   const [options, setOptions] = useState(null);
   // Bumped on reset to remount the uncontrolled primitives back to their defaults.
   const [resetToken, setResetToken] = useState(0);
@@ -70,6 +83,8 @@ export const Filters = ({ filters, onChange, onReset, dataVersion }) => {
 
   return (
     <>
+      {!collapsed && (
+      <>
       <div className="filter-row">
         <div className="genre-filter">
           <OptionsSearch
@@ -117,9 +132,6 @@ export const Filters = ({ filters, onChange, onReset, dataVersion }) => {
           keyOf={(p) => p.id}
           labelOf={(p) => `${p.name} (${p.trackCount})`}
         />
-        <button className="page-button reset-filters-button" onClick={handleReset}>
-          Reset filters
-        </button>
       </div>
 
       <div className="filter-row">
@@ -164,6 +176,12 @@ export const Filters = ({ filters, onChange, onReset, dataVersion }) => {
           />
         )}
       </div>
+
+      <button className="page-button reset-filters-button" onClick={handleReset}>
+        Reset filters
+      </button>
+      </>
+      )}
     </>
   );
 };

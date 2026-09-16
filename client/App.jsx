@@ -4,7 +4,7 @@ import { SongList } from './pages/songList';
 import { Dashboards } from './pages/dashboards';
 import { Events } from './pages/events';
 import { Playlist } from './pages/playlist';
-import { getMe, getSyncStatus, getEnrichmentStatus, wipeDatabase, requestSync } from './api';
+import { getMe, getSyncStatus, getEnrichmentStatus, requestSync } from './api';
 import { THEMES, getTheme, setTheme } from './theme';
 
 const PATH_FOR_TAB = { list: '/', dashboards: '/dashboards', events: '/events', playlist: '/playlist' };
@@ -69,7 +69,6 @@ export const App = () => {
   const [syncError, setSyncError] = useState(null);
   const [syncProgress, setSyncProgress] = useState(null);
   const [enrichmentStatus, setEnrichmentStatus] = useState(null);
-  const [deleting, setDeleting] = useState(false);
   // True while a non-blocking sync runs in the background (stale-library refresh or manual Sync).
   const [syncing, setSyncing] = useState(false);
   const [bgSyncError, setBgSyncError] = useState(null);
@@ -276,27 +275,6 @@ export const App = () => {
     );
   };
 
-  // Testing tool (routes/index.js's /api/wipe-database) — wipes every user's data, not just this account.
-  const handleDelete = () => {
-    if (
-      !confirm(
-        'This permanently deletes the ENTIRE database for ALL users, not just your own account, and cannot be undone. Continue?'
-      )
-    ) {
-      return;
-    }
-    setDeleting(true);
-    wipeDatabase()
-      .then(() => {
-        // systemd waits RestartSec=5 before restarting — reload sooner and you'll hit the dead window.
-        setTimeout(() => window.location.reload(), 7000);
-      })
-      .catch((err) => {
-        setDeleting(false);
-        alert(`Failed to delete: ${err.message}`);
-      });
-  };
-
   // CSS recolors instantly via [data-theme]; only echarts (inside Dashboards) needs the remount.
   const switchTheme = (id) => {
     if (id === theme) return;
@@ -381,13 +359,10 @@ export const App = () => {
     switchTab('list');
   };
 
-  // Rendered into SongList's bottom pagination row (List tab only).
+  // Rendered into SongTable's top toolbar, next to Select All (List tab only).
   const renderLibraryControls = () => <div className="library-controls">
         <button className="page-button filled" onClick={handleSync} disabled={syncing}>
           {syncing ? 'Syncing…' : 'Sync'}
-        </button>
-        <button className="page-button filled" onClick={handleDelete} disabled={deleting}>
-          {deleting ? 'Deleting…' : 'Delete'}
         </button>
         {syncing && (
           <span className="sync-status-text">

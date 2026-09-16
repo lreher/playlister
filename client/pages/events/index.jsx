@@ -117,6 +117,32 @@ export const Events = () => {
           </table>
         </div>
       )}
+      {!error && events?.length > 0 && (
+        <div className="card-list">
+          {pageItems.map((event) => (
+            <div key={event.id} className="mobile-card">
+              <div className="card-top">
+                <div className="card-title">{event.artists.map((a) => a.name).join(', ')}</div>
+                <div className="card-meta">{formatDate(event.date)}</div>
+              </div>
+              <div className="card-subtitle">
+                {event.venue}
+                {event.neighborhood ? ` (${event.neighborhood})` : ''}
+              </div>
+              <div className="card-fields two-col">
+                <div>
+                  <div className="card-field-label">City</div>
+                  <div className="card-field-value">{event.city}</div>
+                </div>
+                <div>
+                  <div className="card-field-label">Songs</div>
+                  <div className="card-field-value">{event.artists.map((a) => a.songCount).join(', ')}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="table-footer">
         {events?.length > 0 && <Pagination offset={offset} limit={LIMIT} total={total} onOffsetChange={setOffset} />}
       </div>

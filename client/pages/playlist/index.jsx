@@ -72,6 +72,21 @@ export const Playlist = ({ songs, onRemove, onClear, canUndo, undoTitle, onUndo,
         </div>
       )}
 
+      {songs.length > 0 && (
+        <div className="card-list">
+          {songs.map((song) => (
+            <div key={song.id} className="mobile-card selectable" onClick={() => onRemove(song.id)} title="Tap to remove">
+              <div className="card-top">
+                <div className="card-title">{song.name}</div>
+                <div className="card-meta">{song.year ?? '—'}</div>
+              </div>
+              <div className="card-subtitle">{song.artists}</div>
+              <div className="card-subtitle">{song.album}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <dialog ref={dialogRef} className="playlist-modal">
         <form onSubmit={handleCreate}>
           <h2>Name your playlist</h2>
